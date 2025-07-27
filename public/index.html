@@ -1,0 +1,49 @@
+// public/index.html
+/*
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Babylon Mobile Color Sync</title>
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>html, body { margin: 0; overflow: hidden; width: 100%; height: 100%; }</style>
+</head>
+<body>
+  <canvas id="renderCanvas"></canvas>
+  <script>
+    const socket = io();
+
+    const canvas = document.getElementById('renderCanvas');
+    const engine = new BABYLON.Engine(canvas, true);
+    const scene = new BABYLON.Scene(engine);
+
+    const camera = new BABYLON.FreeCamera('camera1', new BABYLON.Vector3(0, 5, -10), scene);
+    camera.setTarget(BABYLON.Vector3.Zero());
+    camera.attachControl(canvas, true);
+
+    const light = new BABYLON.HemisphericLight('light', new BABYLON.Vector3(0, 1, 0), scene);
+    light.intensity = 0.7;
+
+    const box = BABYLON.MeshBuilder.CreateBox('box', {}, scene);
+
+    socket.on('colorUpdate', (newColor) => {
+      box.material = new BABYLON.StandardMaterial('mat', scene);
+      box.material.diffuseColor = BABYLON.Color3.FromHexString(newColor);
+    });
+
+    scene.onPointerObservable.add(() => {
+      socket.emit('toggleColor');
+    }, BABYLON.PointerEventTypes.POINTERDOWN);
+
+    engine.runRenderLoop(() => {
+      scene.render();
+    });
+
+    window.addEventListener('resize', () => {
+      engine.resize();
+    });
+  </script>
+</body>
+</html>
+*/
