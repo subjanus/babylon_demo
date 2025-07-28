@@ -27,11 +27,13 @@ io.on('connection', (socket) => {
       lat,
       lon
     });
+    io.emit('clientListUpdate', clients);
   });
 
   socket.on('disconnect', () => {
     delete clients[socket.id];
     io.emit('removeClient', socket.id);
+    io.emit('clientListUpdate', clients);
   });
 });
 

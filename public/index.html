@@ -14,16 +14,31 @@
       width: 100%;
       height: 100%;
     }
+    #hud {
+      position: absolute;
+      top: 0;
+      left: 0;
+      padding: 10px;
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      font-family: monospace;
+      font-size: 12px;
+      z-index: 10;
+      max-height: 50%;
+      overflow-y: auto;
+    }
     canvas {
       touch-action: none;
     }
   </style>
 </head>
 <body>
+  <div id="hud"></div>
   <canvas id="renderCanvas"></canvas>
   <script>
     const socket = io();
     const canvas = document.getElementById('renderCanvas');
+    const hud = document.getElementById('hud');
     const engine = new BABYLON.Engine(canvas, true);
     const scene = new BABYLON.Scene(engine);
 
@@ -58,15 +73,14 @@
       socket.emit('toggleColor');
     }, BABYLON.PointerEventTypes.POINTERDOWN);
 
-    // GPS tracking and remote cube handling
     let baseLat = null, baseLon = null;
     const otherPlayers = {};
 
     function latLonToBabylon(lat, lon) {
       return new BABYLON.Vector3(
-        (lon - baseLon) * 100000, // X axis → longitude
-        0,                        // Y axis → fixed (no height)
-        (lat - baseLat) * 100000  // Z axis → latitude
+        (lon - baseLon) * 100000,
+        0,
+        (lat - baseLat) * 100000
       );
     }
 
@@ -94,7 +108,6 @@
 
     socket.on('updateClientPosition', ({ id, lat, lon }) => {
       if (socket.id === id) return;
-
       if (!baseLat || !baseLon) return;
 
       const pos = latLonToBabylon(lat, lon);
@@ -117,6 +130,16 @@
         otherPlayers[id].dispose();
         delete otherPlayers[id];
       }
+    });
+
+    socket.on('clientListUpdate', (clients) => {
+      hud.innerHTML = `Active Clients: ${Object.keys(clients).length}<br>`;
+      for (const [id, pos] of Object.entries(clients)) {
+        if (pos.lat && pos.lon) {
+          hud.innerHTML += `${id.slice(0, 6)}: ${pos.lat}, ${pos.lon}<br>`;
+        }
+      }
+      setTimeout(() => { hud.innerHTML = ''; }, 5000);
     });
 
     startGpsTracking();
