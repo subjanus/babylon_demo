@@ -64,9 +64,9 @@
 
     function latLonToBabylon(lat, lon) {
       return new BABYLON.Vector3(
-        (lon - baseLon) * 100000,
-        0,
-        (lat - baseLat) * 100000
+        (lon - baseLon) * 100000, // X axis → longitude
+        0,                        // Y axis → fixed (no height)
+        (lat - baseLat) * 100000  // Z axis → latitude
       );
     }
 
