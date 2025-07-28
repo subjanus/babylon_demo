@@ -103,6 +103,10 @@
               lastLat = lat;
               lastLon = lon;
               socket.emit('gpsUpdate', { lat, lon });
+
+              const myPos = latLonToBabylon(lat, lon);
+              camera.position.x = myPos.x;
+              camera.position.z = myPos.z;
             }
           },
           err => console.warn('GPS error', err),
