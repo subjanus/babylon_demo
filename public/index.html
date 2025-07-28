@@ -1,8 +1,10 @@
+// public/index.html
+/*
 <!DOCTYPE html>
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Babylon Gyro Cube</title>
+  <title>Babylon Gyro GPS Cube</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <script src="/socket.io/socket.io.js"></script>
   <style>
@@ -25,12 +27,10 @@
     const engine = new BABYLON.Engine(canvas, true);
     const scene = new BABYLON.Scene(engine);
 
-    // Device orientation camera
     const camera = new BABYLON.DeviceOrientationCamera('DevOrCam', new BABYLON.Vector3(0, 0, -10), scene);
     camera.setTarget(BABYLON.Vector3.Zero());
     camera.attachControl(canvas, true);
 
-    // Request permission on iOS
     function requestDevicePermissions() {
       if (typeof DeviceMotionEvent !== 'undefined' &&
           typeof DeviceMotionEvent.requestPermission === 'function') {
@@ -58,6 +58,69 @@
       socket.emit('toggleColor');
     }, BABYLON.PointerEventTypes.POINTERDOWN);
 
+    // GPS tracking and remote cube handling
+    let baseLat = null, baseLon = null;
+    const otherPlayers = {};
+
+    function latLonToBabylon(lat, lon) {
+      return new BABYLON.Vector3(
+        (lon - baseLon) * 100000,
+        0,
+        (lat - baseLat) * 100000
+      );
+    }
+
+    function startGpsTracking() {
+      if ('geolocation' in navigator) {
+        navigator.geolocation.watchPosition(
+          pos => {
+            const lat = +pos.coords.latitude.toFixed(5);
+            const lon = +pos.coords.longitude.toFixed(5);
+
+            if (!baseLat || !baseLon) {
+              baseLat = lat;
+              baseLon = lon;
+            }
+
+            socket.emit('gpsUpdate', { lat, lon });
+          },
+          err => console.warn('GPS error', err),
+          { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
+        );
+      } else {
+        console.warn('Geolocation not supported');
+      }
+    }
+
+    socket.on('updateClientPosition', ({ id, lat, lon }) => {
+      if (socket.id === id) return;
+
+      if (!baseLat || !baseLon) return;
+
+      const pos = latLonToBabylon(lat, lon);
+
+      if (otherPlayers[id]) {
+        otherPlayers[id].dispose();
+      }
+
+      const cube = BABYLON.MeshBuilder.CreateBox(`player-${id}`, { size: 1 }, scene);
+      const mat = new BABYLON.StandardMaterial(`mat-${id}`, scene);
+      mat.diffuseColor = BABYLON.Color3.Purple();
+      cube.material = mat;
+      cube.position = pos;
+
+      otherPlayers[id] = cube;
+    });
+
+    socket.on('removeClient', (id) => {
+      if (otherPlayers[id]) {
+        otherPlayers[id].dispose();
+        delete otherPlayers[id];
+      }
+    });
+
+    startGpsTracking();
+
     engine.runRenderLoop(() => {
       scene.render();
     });
@@ -68,3 +131,4 @@
   </script>
 </body>
 </html>
+*/
