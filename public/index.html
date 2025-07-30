@@ -60,19 +60,9 @@
     const light = new BABYLON.HemisphericLight('light', new BABYLON.Vector3(0, 1, 0), scene);
     light.intensity = 0.7;
 
-    const box = BABYLON.MeshBuilder.CreateBox('box', {}, scene);
-    box.material = new BABYLON.StandardMaterial('mat', scene);
-
-    socket.on('colorUpdate', (newColor) => {
-      box.material.diffuseColor = BABYLON.Color3.FromHexString(newColor);
-    });
-
-    scene.onPointerObservable.add(() => {
-      socket.emit('toggleColor');
-    }, BABYLON.PointerEventTypes.POINTERDOWN);
-
     let baseLat = null, baseLon = null;
     const otherPlayers = {};
+    let clientOrder = [];
 
     function latLonToBabylon(lat, lon) {
       return new BABYLON.Vector3(
@@ -115,11 +105,11 @@
       }
     }
 
-    function createBlinkingCube(id, position) {
+    function createBlinkingCube(id, position, color) {
       const cube = BABYLON.MeshBuilder.CreateBox(`player-${id}`, { size: 1 }, scene);
       const mat = new BABYLON.StandardMaterial(`mat-${id}`, scene);
-      mat.diffuseColor = BABYLON.Color3.Purple();
-      mat.emissiveColor = new BABYLON.Color3(0.5, 0, 0.5);
+      mat.diffuseColor = color;
+      mat.emissiveColor = color;
       mat.emissiveIntensity = 0.2;
       cube.material = mat;
       cube.position = position;
@@ -144,14 +134,27 @@
       return cube;
     }
 
+    function getColorForClient(id) {
+      const index = clientOrder.indexOf(id);
+      if (index === 0) return new BABYLON.Color3(0, 0, 0);     // Black
+      if (index === 1) return new BABYLON.Color3(1, 1, 1);     // White
+      return new BABYLON.Color3(0.5, 0.5, 0.5);                // Gray fallback
+    }
+
     function updateOrCreateClientCube(id, lat, lon) {
       if (!baseLat || !baseLon || id === socket.id) return;
       const pos = latLonToBabylon(lat, lon);
 
+      if (!clientOrder.includes(id)) {
+        clientOrder.push(id);
+      }
+
+      const color = getColorForClient(id);
+
       if (otherPlayers[id]) {
         otherPlayers[id].position = pos;
       } else {
-        otherPlayers[id] = createBlinkingCube(id, pos);
+        otherPlayers[id] = createBlinkingCube(id, pos, color);
       }
     }
 
@@ -166,6 +169,8 @@
           if (id !== socket.id) {
             updateOrCreateClientCube(id, pos.lat, pos.lon);
             hud.innerHTML += `${id.slice(0, 6)}: ${pos.lat}, ${pos.lon}<br>`;
+          } else if (!clientOrder.includes(id)) {
+            clientOrder.push(id);
           }
         }
       }
@@ -177,6 +182,7 @@
         otherPlayers[id].dispose();
         delete otherPlayers[id];
       }
+      clientOrder = clientOrder.filter(cid => cid !== id);
     });
 
     startGpsTracking();
