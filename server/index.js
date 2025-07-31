@@ -1,4 +1,3 @@
-// server/index.js
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -28,6 +27,11 @@ io.on('connection', (socket) => {
       lon
     });
     io.emit('clientListUpdate', clients);
+  });
+
+  socket.on('dropCube', ({ lat, lon }) => {
+    socket.broadcast.emit('droppedCube', { id: socket.id, lat, lon });
+    socket.emit('droppedCube', { id: socket.id, lat, lon }); // Echo to sender
   });
 
   socket.on('disconnect', () => {
