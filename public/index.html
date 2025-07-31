@@ -1,166 +1,168 @@
+// public/index.html
+/*
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="UTF-8">
-  <title>Babylon GPS Cube (Pyodide)</title>
-  <script src="https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Babylon Gyro GPS Cube</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <script src="/socket.io/socket.io.js"></script>
   <style>
-    html, body { margin: 0; overflow: hidden; width: 100%; height: 100%; }
-    #hud {
-      position: absolute; top: 0; left: 0; padding: 10px;
-      background: rgba(0,0,0,0.5); color: #fff;
-      font-family: monospace; font-size: 12px; z-index: 10;
-      max-height: 50%; overflow-y: auto;
+    html, body {
+      margin: 0;
+      overflow: hidden;
+      width: 100%;
+      height: 100%;
     }
-    canvas { touch-action: none; }
+    #hud {
+      position: absolute;
+      top: 0;
+      left: 0;
+      padding: 10px;
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      font-family: monospace;
+      font-size: 12px;
+      z-index: 10;
+      max-height: 50%;
+      overflow-y: auto;
+    }
+    canvas {
+      touch-action: none;
+    }
   </style>
 </head>
 <body>
   <div id="hud"></div>
   <canvas id="renderCanvas"></canvas>
-  <script type="text/python">
-from js import document, console, window, BABYLON, setTimeout
-from pyodide.ffi import create_proxy
-from math import cos, pi
+  <script>
+    const socket = io();
+    const canvas = document.getElementById('renderCanvas');
+    const hud = document.getElementById('hud');
+    const engine = new BABYLON.Engine(canvas, true);
+    const scene = new BABYLON.Scene(engine);
 
-socket = window.io()
-canvas = document.getElementById("renderCanvas")
-hud = document.getElementById("hud")
-engine = BABYLON.Engine.new(canvas, True)
-scene = BABYLON.Scene.new(engine)
+    const camera = new BABYLON.DeviceOrientationCamera('DevOrCam', new BABYLON.Vector3(0, 0, -10), scene);
+    camera.setTarget(BABYLON.Vector3.Zero());
+    camera.attachControl(canvas, true);
 
-camera = BABYLON.DeviceOrientationCamera.new("DevOrCam", BABYLON.Vector3(0, 0, -10), scene)
-camera.setTarget(BABYLON.Vector3.Zero())
-camera.attachControl(canvas, True)
+    function requestDevicePermissions() {
+      if (typeof DeviceMotionEvent !== 'undefined' &&
+          typeof DeviceMotionEvent.requestPermission === 'function') {
+        DeviceMotionEvent.requestPermission()
+          .then(permissionState => {
+            if (permissionState === 'granted') {
+              console.log('Device motion permission granted');
+            }
+          }).catch(console.error);
+      }
+    }
+    window.addEventListener('click', requestDevicePermissions, { once: true });
 
-light = BABYLON.HemisphericLight.new("light", BABYLON.Vector3(0, 1, 0), scene)
-light.intensity = 0.7
+    const light = new BABYLON.HemisphericLight('light', new BABYLON.Vector3(0, 1, 0), scene);
+    light.intensity = 0.7;
 
-baseLat = None
-baseLon = None
-currentLat = None
-currentLon = None
-lastLat = None
-lastLon = None
-otherPlayers = dict()
-droppedCubes = []
-clientOrder = []
+    const box = BABYLON.MeshBuilder.CreateBox('box', {}, scene);
+    box.material = new BABYLON.StandardMaterial('mat', scene);
 
-def clamp_distance_meters(val, max_val=1000):
-    return (val / abs(val)) * min(abs(val), max_val) if val != 0 else 0
+    socket.on('colorUpdate', (newColor) => {
+      box.material.diffuseColor = BABYLON.Color3.FromHexString(newColor);
+    });
 
-def lat_lon_to_babylon(lat, lon):
-    global baseLat, baseLon
-    if baseLat is None or baseLon is None:
-        return BABYLON.Vector3(0, 0, 0)
-    lat_scale = 111320
-    lon_scale = 111320 * cos(baseLat * pi / 180)
-    x = clamp_distance_meters((lon - baseLon) * lon_scale)
-    z = clamp_distance_meters((lat - baseLat) * lat_scale)
-    return BABYLON.Vector3(x, 0, z)
+    scene.onPointerObservable.add(() => {
+      socket.emit('toggleColor');
+    }, BABYLON.PointerEventTypes.POINTERDOWN);
 
-def create_cube(id, position, color):
-    box = BABYLON.MeshBuilder.CreateBox(f"player-{id}", { "size": 1 }, scene)
-    mat = BABYLON.StandardMaterial.new(f"mat-{id}", scene)
-    mat.diffuseColor = color
-    mat.emissiveColor = color
-    mat.emissiveIntensity = 0.2
-    box.material = mat
-    box.position = position
-    return box
+    let baseLat = null, baseLon = null;
+    const otherPlayers = {};
 
-def drop_cube_at(lat, lon):
-    pos = lat_lon_to_babylon(lat, lon)
-    cube = BABYLON.MeshBuilder.CreateBox(f"drop-{window.Date.now()}", { "size": 0.5 }, scene)
-    mat = BABYLON.StandardMaterial.new("dropMat", scene)
-    mat.diffuseColor = BABYLON.Color3(0.7, 0.1, 0.9)
-    cube.material = mat
-    cube.position = pos
-    droppedCubes.append(cube)
+    function latLonToBabylon(lat, lon) {
+      return new BABYLON.Vector3(
+        (lon - baseLon) * 100000,
+        0,
+        (lat - baseLat) * 100000
+      );
+    }
 
-def get_color_for_client(id):
-    idx = clientOrder.index(id) if id in clientOrder else -1
-    if idx == 0: return BABYLON.Color3(0, 0, 0)
-    if idx == 1: return BABYLON.Color3(1, 1, 1)
-    return BABYLON.Color3(0.5, 0.5, 0.5)
+    let lastLat = null;
+    let lastLon = null;
 
-def update_or_create_client_cube(id, lat, lon):
-    if id == socket.id:
-        return
-    pos = lat_lon_to_babylon(lat, lon)
-    color = get_color_for_client(id)
-    if id in otherPlayers:
-        otherPlayers[id].position = pos
-    else:
-        otherPlayers[id] = create_cube(id, pos, color)
+    function startGpsTracking() {
+      if ('geolocation' in navigator) {
+        navigator.geolocation.watchPosition(
+          pos => {
+            const lat = +pos.coords.latitude.toFixed(5);
+            const lon = +pos.coords.longitude.toFixed(5);
 
-def on_pointer_down(evt):
-    if currentLat is not None and currentLon is not None:
-        socket.emit("dropCube", { "lat": currentLat, "lon": currentLon })
-canvas.addEventListener("pointerdown", create_proxy(on_pointer_down))
+            if (!baseLat || !baseLon) {
+              baseLat = lat;
+              baseLon = lon;
+            }
 
-def gps_success(pos):
-    global currentLat, currentLon, lastLat, lastLon, baseLat, baseLon
-    coords = pos.coords
-    lat = round(coords.latitude, 6)
-    lon = round(coords.longitude, 6)
-    currentLat = lat
-    currentLon = lon
-    if baseLat is None or baseLon is None:
-        baseLat = lat
-        baseLon = lon
-    if lat != lastLat or lon != lastLon:
-        lastLat = lat
-        lastLon = lon
-        socket.emit("gpsUpdate", { "lat": lat, "lon": lon })
-        my_pos = lat_lon_to_babylon(lat, lon)
-        camera.position.x = my_pos.x
-        camera.position.z = my_pos.z
+            if (lat !== lastLat || lon !== lastLon) {
+              lastLat = lat;
+              lastLon = lon;
+              socket.emit('gpsUpdate', { lat, lon });
 
-def gps_error(err):
-    console.warn("GPS error", err)
+              const myPos = latLonToBabylon(lat, lon);
+              camera.position.x = myPos.x;
+              camera.position.z = myPos.z;
+            }
+          },
+          err => console.warn('GPS error', err),
+          { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+        );
+      } else {
+        console.warn('Geolocation not supported');
+      }
+    }
 
-def start_gps():
-    if hasattr(window.navigator, "geolocation"):
-        window.navigator.geolocation.watchPosition(
-            create_proxy(gps_success),
-            create_proxy(gps_error),
-            { "enableHighAccuracy": True, "maximumAge": 1000, "timeout": 10000 }
-        )
-start_gps()
+    socket.on('updateClientPosition', ({ id, lat, lon }) => {
+      if (socket.id === id) return;
+      if (!baseLat || !baseLon) return;
 
-def on_client_list_update(event):
-    global clientOrder
-    clients = event.clients.to_py()
-    clientOrder = event.clientOrder.to_py()
-    hud.innerHTML = f"Active Clients: {len(clients)}<br>"
-    for id, pos in clients.items():
-        if pos["lat"] is not None and pos["lon"] is not None:
-            if id != socket.id:
-                update_or_create_client_cube(id, pos["lat"], pos["lon"])
-            hud.innerHTML += f"{id[:6]} ▶ {pos['lat']}, {pos['lon']}<br>"
-    setTimeout(lambda: setattr(hud, "innerHTML", ""), 5000)
+      const pos = latLonToBabylon(lat, lon);
 
-socket.on("clientListUpdate", create_proxy(on_client_list_update))
-socket.on("updateClientPosition", create_proxy(
-    lambda d: update_or_create_client_cube(d.id, d.lat, d.lon)
-))
-socket.on("removeClient", create_proxy(
-    lambda id: otherPlayers.pop(id).dispose() if id in otherPlayers else None
-))
-socket.on("droppedCube", create_proxy(
-    lambda d: drop_cube_at(d.lat, d.lon)
-))
+      if (otherPlayers[id]) {
+        otherPlayers[id].dispose();
+      }
 
-def render_loop():
-    scene.render()
-engine.runRenderLoop(create_proxy(render_loop))
+      const cube = BABYLON.MeshBuilder.CreateBox(`player-${id}`, { size: 1 }, scene);
+      const mat = new BABYLON.StandardMaterial(`mat-${id}`, scene);
+      mat.diffuseColor = BABYLON.Color3.Purple();
+      cube.material = mat;
+      cube.position = pos;
 
-def on_resize(evt):
-    engine.resize()
-window.addEventListener("resize", create_proxy(on_resize))
+      otherPlayers[id] = cube;
+    });
+
+    socket.on('removeClient', (id) => {
+      if (otherPlayers[id]) {
+        otherPlayers[id].dispose();
+        delete otherPlayers[id];
+      }
+    });
+
+    socket.on('clientListUpdate', (clients) => {
+      hud.innerHTML = `Active Clients: ${Object.keys(clients).length}<br>`;
+      for (const [id, pos] of Object.entries(clients)) {
+        if (pos.lat && pos.lon) {
+          hud.innerHTML += `${id.slice(0, 6)}: ${pos.lat}, ${pos.lon}<br>`;
+        }
+      }
+      setTimeout(() => { hud.innerHTML = ''; }, 5000);
+    });
+
+    startGpsTracking();
+
+    engine.runRenderLoop(() => {
+      scene.render();
+    });
+
+    window.addEventListener('resize', () => {
+      engine.resize();
+    });
   </script>
 </body>
 </html>
+*/
