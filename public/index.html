@@ -1,168 +1,174 @@
-// public/index.html
-/*
 <!DOCTYPE html>
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Babylon Gyro GPS Cube</title>
+  <title>Babylon Gyro GPS Cube (Pyodide)</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.23.2/full/pyodide.js"></script>
   <style>
     html, body {
       margin: 0;
       overflow: hidden;
-      width: 100%;
-      height: 100%;
+      width: 100%; height: 100%;
     }
     #hud {
-      position: absolute;
-      top: 0;
-      left: 0;
+      position: absolute; top: 0; left: 0;
       padding: 10px;
-      background: rgba(0, 0, 0, 0.5);
+      background: rgba(0,0,0,0.5);
       color: white;
       font-family: monospace;
       font-size: 12px;
       z-index: 10;
-      max-height: 50%;
-      overflow-y: auto;
+      max-height: 50%; overflow-y: auto;
     }
-    canvas {
-      touch-action: none;
-    }
+    canvas { touch-action: none; }
   </style>
 </head>
 <body>
   <div id="hud"></div>
   <canvas id="renderCanvas"></canvas>
-  <script>
-    const socket = io();
-    const canvas = document.getElementById('renderCanvas');
-    const hud = document.getElementById('hud');
-    const engine = new BABYLON.Engine(canvas, true);
-    const scene = new BABYLON.Scene(engine);
 
-    const camera = new BABYLON.DeviceOrientationCamera('DevOrCam', new BABYLON.Vector3(0, 0, -10), scene);
-    camera.setTarget(BABYLON.Vector3.Zero());
-    camera.attachControl(canvas, true);
+  <script type="module">
+    import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v0.23.2/full/pyodide.js";
 
-    function requestDevicePermissions() {
-      if (typeof DeviceMotionEvent !== 'undefined' &&
-          typeof DeviceMotionEvent.requestPermission === 'function') {
-        DeviceMotionEvent.requestPermission()
-          .then(permissionState => {
-            if (permissionState === 'granted') {
-              console.log('Device motion permission granted');
-            }
-          }).catch(console.error);
-      }
-    }
-    window.addEventListener('click', requestDevicePermissions, { once: true });
+    async function main() {
+      const pyodide = await loadPyodide();
+      // No extra packages needed
+      await pyodide.runPythonAsync(`
+from pyodide import create_proxy
+import js
 
-    const light = new BABYLON.HemisphericLight('light', new BABYLON.Vector3(0, 1, 0), scene);
-    light.intensity = 0.7;
+# Socket.IO client
+socket = js.io()
 
-    const box = BABYLON.MeshBuilder.CreateBox('box', {}, scene);
-    box.material = new BABYLON.StandardMaterial('mat', scene);
+# Babylon setup
+canvas = js.document.getElementById('renderCanvas')
+hud = js.document.getElementById('hud')
+engine = js.BABYLON.Engine(canvas, True)
+scene = js.BABYLON.Scene(engine)
+camera = js.BABYLON.DeviceOrientationCamera('DevOrCam', js.BABYLON.Vector3(0,0,-10), scene)
+camera.setTarget(js.BABYLON.Vector3.Zero())
+camera.attachControl(canvas, True)
 
-    socket.on('colorUpdate', (newColor) => {
-      box.material.diffuseColor = BABYLON.Color3.FromHexString(newColor);
-    });
+# Permissions helper
 
-    scene.onPointerObservable.add(() => {
-      socket.emit('toggleColor');
-    }, BABYLON.PointerEventTypes.POINTERDOWN);
+def request_device_permissions(evt):
+    if hasattr(js.DeviceMotionEvent, 'requestPermission'):
+        promise = js.DeviceMotionEvent.requestPermission()
+        def on_result(permission):
+            if permission == 'granted':
+                js.console.log('Device motion permission granted')
+        promise.then(on_result).catch(js.console.error)
 
-    let baseLat = null, baseLon = null;
-    const otherPlayers = {};
+req_perm = create_proxy(request_device_permissions)
+js.window.addEventListener('click', req_perm, {{'once': True}})
 
-    function latLonToBabylon(lat, lon) {
-      return new BABYLON.Vector3(
-        (lon - baseLon) * 100000,
+# Light and box
+light = js.BABYLON.HemisphericLight('light', js.BABYLON.Vector3(0,1,0), scene)
+light.intensity = 0.7
+box = js.BABYLON.MeshBuilder.CreateBox('box', {{}}, scene)
+box.material = js.BABYLON.StandardMaterial('mat', scene)
+
+# State
+color = '#ff0000'
+clients = {{}}
+other_players = {{}}
+base_lat = None
+base_lon = None
+last_lat = None
+last_lon = None
+
+# Helper: convert lat/lon to Babylon coords
+
+def lat_lon_to_babylon(lat, lon):
+    return js.BABYLON.Vector3(
+        (lon - base_lat) * 100000,
         0,
-        (lat - baseLat) * 100000
-      );
+        (lat - base_lat) * 100000
+    )
+
+# Socket events
+
+# colorUpdate
+socket.on('colorUpdate', create_proxy(lambda new_color: setattr(
+    box.material, 'diffuseColor', js.BABYLON.Color3.FromHexString(new_color)
+)))
+
+# toggleColor on pointer down
+scene.onPointerObservable.add(
+    create_proxy(lambda evt: socket.emit('toggleColor')),
+    js.BABYLON.PointerEventTypes.POINTERDOWN
+)
+
+# GPS tracking
+
+def start_gps_tracking():
+    def success(pos):
+        global base_lat, base_lon, last_lat, last_lon
+        lat = round(pos.coords.latitude, 5)
+        lon = round(pos.coords.longitude, 5)
+        if base_lat is None or base_lon is None:
+            base_lat = lat
+            base_lon = lon
+        if lat != last_lat or lon != last_lon:
+            last_lat = lat
+            last_lon = lon
+            socket.emit('gpsUpdate', {{'lat': lat, 'lon': lon}})
+            my_pos = lat_lon_to_babylon(lat, lon)
+            camera.position.x = my_pos.x
+            camera.position.z = my_pos.z
+    def err(err):
+        js.console.warn('GPS error', err)
+    success_p = create_proxy(success)
+    err_p = create_proxy(err)
+    js.navigator.geolocation.watchPosition(success_p, err_p,
+        {{'enableHighAccuracy': True, 'maximumAge': 1000, 'timeout': 10000}})
+
+start_gps_tracking()
+
+# updateClientPosition
+
+def update_client(data):
+    pid = data.id
+    if pid == socket.id: return
+    if base_lat is None or base_lon is None: return
+    pos = lat_lon_to_babylon(data.lat, data.lon)
+    if pid in other_players:
+        other_players[pid].dispose()
+    cube = js.BABYLON.MeshBuilder.CreateBox(f'player-{pid}', {{'size':1}}, scene)
+    mat = js.BABYLON.StandardMaterial(f'mat-{pid}', scene)
+    mat.diffuseColor = js.BABYLON.Color3.Purple()
+    cube.material = mat
+    cube.position = pos
+    other_players[pid] = cube
+
+socket.on('updateClientPosition', create_proxy(update_client))
+
+# removeClient
+socket.on('removeClient', create_proxy(lambda pid: (
+    other_players[pid].dispose() if pid in other_players else None,
+    other_players.pop(pid, None)
+)))
+
+# clientListUpdate
+
+def list_update(data):
+    hud.innerHTML = f'Active Clients: {len(data)}<br>'
+    for pid, pos in js.Object.entries(data).to_py():
+        if pos.lat and pos.lon:
+            hud.innerHTML += f"{pid[:6]}: {pos.lat}, {pos.lon}<br>"
+    js.setTimeout(create_proxy(lambda: setattr(hud, 'innerHTML', '')), 5000)
+
+socket.on('clientListUpdate', create_proxy(list_update))
+
+# Render loop & resize
+engine.runRenderLoop(create_proxy(lambda: scene.render()))
+js.window.addEventListener('resize', create_proxy(lambda e: engine.resize()))
+      `)
     }
 
-    let lastLat = null;
-    let lastLon = null;
-
-    function startGpsTracking() {
-      if ('geolocation' in navigator) {
-        navigator.geolocation.watchPosition(
-          pos => {
-            const lat = +pos.coords.latitude.toFixed(5);
-            const lon = +pos.coords.longitude.toFixed(5);
-
-            if (!baseLat || !baseLon) {
-              baseLat = lat;
-              baseLon = lon;
-            }
-
-            if (lat !== lastLat || lon !== lastLon) {
-              lastLat = lat;
-              lastLon = lon;
-              socket.emit('gpsUpdate', { lat, lon });
-
-              const myPos = latLonToBabylon(lat, lon);
-              camera.position.x = myPos.x;
-              camera.position.z = myPos.z;
-            }
-          },
-          err => console.warn('GPS error', err),
-          { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
-        );
-      } else {
-        console.warn('Geolocation not supported');
-      }
-    }
-
-    socket.on('updateClientPosition', ({ id, lat, lon }) => {
-      if (socket.id === id) return;
-      if (!baseLat || !baseLon) return;
-
-      const pos = latLonToBabylon(lat, lon);
-
-      if (otherPlayers[id]) {
-        otherPlayers[id].dispose();
-      }
-
-      const cube = BABYLON.MeshBuilder.CreateBox(`player-${id}`, { size: 1 }, scene);
-      const mat = new BABYLON.StandardMaterial(`mat-${id}`, scene);
-      mat.diffuseColor = BABYLON.Color3.Purple();
-      cube.material = mat;
-      cube.position = pos;
-
-      otherPlayers[id] = cube;
-    });
-
-    socket.on('removeClient', (id) => {
-      if (otherPlayers[id]) {
-        otherPlayers[id].dispose();
-        delete otherPlayers[id];
-      }
-    });
-
-    socket.on('clientListUpdate', (clients) => {
-      hud.innerHTML = `Active Clients: ${Object.keys(clients).length}<br>`;
-      for (const [id, pos] of Object.entries(clients)) {
-        if (pos.lat && pos.lon) {
-          hud.innerHTML += `${id.slice(0, 6)}: ${pos.lat}, ${pos.lon}<br>`;
-        }
-      }
-      setTimeout(() => { hud.innerHTML = ''; }, 5000);
-    });
-
-    startGpsTracking();
-
-    engine.runRenderLoop(() => {
-      scene.render();
-    });
-
-    window.addEventListener('resize', () => {
-      engine.resize();
-    });
+    main();
   </script>
 </body>
 </html>
-*/
