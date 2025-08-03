@@ -31,7 +31,7 @@ io.on('connection', (socket) => {
 
   socket.on('dropCube', ({ lat, lon }) => {
     socket.broadcast.emit('droppedCube', { id: socket.id, lat, lon });
-    socket.emit('droppedCube', { id: socket.id, lat, lon }); // Echo to sender
+    socket.emit('droppedCube', { id: socket.id, lat, lon });
   });
 
   socket.on('disconnect', () => {

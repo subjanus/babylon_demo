@@ -62,7 +62,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const anim = new BABYLON.Animation(
       `blink-${id}`, "material.emissiveIntensity",
       2, BABYLON.Animation.ANIMATIONTYPE_FLOAT,
-      BABYLON.Animation.ANIMATIONLOOPMODE_CYCLE
+      BABYLON.AnimationLOOPMODE_CYCLE
     );
     anim.setKeys([
       { frame: 0,  value: 0.2 },
