@@ -2,18 +2,32 @@
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Babylon GPS Cube (Drift Fixed)</title>
+  <title>Babylon Gyro GPS Cube</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <script src="/socket.io/socket.io.js"></script>
   <style>
-    html, body { margin:0; overflow:hidden; width:100%; height:100%; }
-    #hud {
-      position:absolute; top:0; left:0; padding:10px;
-      background:rgba(0,0,0,0.5); color:#fff;
-      font-family:monospace; font-size:12px; z-index:10;
-      max-height:50%; overflow-y:auto;
+    html, body {
+      margin: 0;
+      overflow: hidden;
+      width: 100%;
+      height: 100%;
     }
-    canvas { touch-action:none; }
+    #hud {
+      position: absolute;
+      top: 0;
+      left: 0;
+      padding: 10px;
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      font-family: monospace;
+      font-size: 12px;
+      z-index: 10;
+      max-height: 50%;
+      overflow-y: auto;
+    }
+    canvas {
+      touch-action: none;
+    }
   </style>
 </head>
 <body>
@@ -22,78 +36,90 @@
   <script>
     const socket = io();
     const canvas = document.getElementById('renderCanvas');
-    const hud    = document.getElementById('hud');
+    const hud = document.getElementById('hud');
     const engine = new BABYLON.Engine(canvas, true);
-    const scene  = new BABYLON.Scene(engine);
+    const scene = new BABYLON.Scene(engine);
 
-    const camera = new BABYLON.DeviceOrientationCamera('DevOrCam', new BABYLON.Vector3(0,0,-10), scene);
+    const camera = new BABYLON.DeviceOrientationCamera('DevOrCam', new BABYLON.Vector3(0, 0, -10), scene);
     camera.setTarget(BABYLON.Vector3.Zero());
     camera.attachControl(canvas, true);
 
-    new BABYLON.HemisphericLight('light', new BABYLON.Vector3(0,1,0), scene).intensity = 0.7;
+    function requestDevicePermissions() {
+      if (typeof DeviceMotionEvent !== 'undefined' &&
+          typeof DeviceMotionEvent.requestPermission === 'function') {
+        DeviceMotionEvent.requestPermission()
+          .then(permissionState => {
+            if (permissionState === 'granted') {
+              console.log('Device motion permission granted');
+            }
+          }).catch(console.error);
+      }
+    }
+    window.addEventListener('click', requestDevicePermissions, { once: true });
+
+    const light = new BABYLON.HemisphericLight('light', new BABYLON.Vector3(0, 1, 0), scene);
+    light.intensity = 0.7;
 
     let baseLat = null, baseLon = null;
-    let currentLat = null, currentLon = null;
-    let lastLat = null, lastLon = null;
-
     const otherPlayers = {};
     const droppedCubes = [];
     let clientOrder = [];
-
-    function clampDistanceMeters(val, max = 1000) {
-      return Math.sign(val) * Math.min(Math.abs(val), max);
-    }
+    let currentLat = null, currentLon = null;
 
     function latLonToBabylon(lat, lon) {
-      if (!baseLat || !baseLon) return BABYLON.Vector3.Zero();
-
-      const latScale = 111320; // meters/degree latitude
-      const lonScale = 111320 * Math.cos(baseLat * Math.PI / 180);
-
-      const x = clampDistanceMeters((lon - baseLon) * lonScale);
-      const z = clampDistanceMeters((lat - baseLat) * latScale);
-
-      return new BABYLON.Vector3(x, 0, z);
+      return new BABYLON.Vector3(
+        (lon - baseLon) * 100000,
+        0,
+        (lat - baseLat) * 100000
+      );
     }
 
-    function createBlinkingCube(id, pos, color) {
+    function createBlinkingCube(id, position, color) {
       const cube = BABYLON.MeshBuilder.CreateBox(`player-${id}`, { size: 1 }, scene);
-      const mat  = new BABYLON.StandardMaterial(`mat-${id}`, scene);
+      const mat = new BABYLON.StandardMaterial(`mat-${id}`, scene);
       mat.diffuseColor = color;
       mat.emissiveColor = color;
       mat.emissiveIntensity = 0.2;
       cube.material = mat;
-      cube.position = pos;
+      cube.position = position;
 
-      const anim = new BABYLON.Animation(
-        `blink-${id}`, "material.emissiveIntensity",
+      const blinkAnim = new BABYLON.Animation(
+        `blink-${id}`,
+        "material.emissiveIntensity",
         2,
         BABYLON.Animation.ANIMATIONTYPE_FLOAT,
         BABYLON.Animation.ANIMATIONLOOPMODE_CYCLE
       );
 
-      anim.setKeys([
+      const keys = [
         { frame: 0, value: 0.2 },
-        { frame:10, value: 1 },
-        { frame:20, value: 0.2 }
-      ]);
-
-      cube.animations.push(anim);
+        { frame: 10, value: 1 },
+        { frame: 20, value: 0.2 }
+      ];
+      blinkAnim.setKeys(keys);
+      cube.animations.push(blinkAnim);
       scene.beginAnimation(cube, 0, 20, true);
+
       return cube;
     }
 
     function getColorForClient(id) {
-      const idx = clientOrder.indexOf(id);
-      if (idx === 0) return new BABYLON.Color3(0, 0, 0);     // black
-      if (idx === 1) return new BABYLON.Color3(1, 1, 1);     // white
-      return new BABYLON.Color3(0.5, 0.5, 0.5);              // gray
+      const index = clientOrder.indexOf(id);
+      if (index === 0) return new BABYLON.Color3(0, 0, 0);     // Black
+      if (index === 1) return new BABYLON.Color3(1, 1, 1);     // White
+      return new BABYLON.Color3(0.5, 0.5, 0.5);                // Gray fallback
     }
 
     function updateOrCreateClientCube(id, lat, lon) {
-      if (id === socket.id) return;
+      if (!baseLat || !baseLon || id === socket.id) return;
       const pos = latLonToBabylon(lat, lon);
+
+      if (!clientOrder.includes(id)) {
+        clientOrder.push(id);
+      }
+
       const color = getColorForClient(id);
+
       if (otherPlayers[id]) {
         otherPlayers[id].position = pos;
       } else {
@@ -102,84 +128,94 @@
     }
 
     function dropCubeAt(lat, lon) {
+      if (!baseLat || !baseLon) return;
       const pos = latLonToBabylon(lat, lon);
-      const cube = BABYLON.MeshBuilder.CreateBox(`drop-${Date.now()}`, { size: 0.5 }, scene);
-      const mat  = new BABYLON.StandardMaterial('dropMat', scene);
-      mat.diffuseColor = new BABYLON.Color3(0.7, 0.1, 0.9);
+      const cube = BABYLON.MeshBuilder.CreateBox('dropCube', { size: 0.5 }, scene);
+      const mat = new BABYLON.StandardMaterial('dropMat', scene);
+      mat.diffuseColor = new BABYLON.Color3(0.7, 0.1, 0.9); // Purple
       cube.material = mat;
       cube.position = pos;
       droppedCubes.push(cube);
     }
 
-    socket.on('colorUpdate', () => {/* not used */});
-
     socket.on('updateClientPosition', ({ id, lat, lon }) => {
       updateOrCreateClientCube(id, lat, lon);
     });
 
-    socket.on('clientListUpdate', ({ clients, clientOrder: order }) => {
-      clientOrder = order.slice();
+    socket.on('clientListUpdate', (clients) => {
       hud.innerHTML = `Active Clients: ${Object.keys(clients).length}<br>`;
       for (const [id, pos] of Object.entries(clients)) {
-        if (pos.lat != null && pos.lon != null) {
+        if (pos.lat && pos.lon) {
           if (id !== socket.id) {
             updateOrCreateClientCube(id, pos.lat, pos.lon);
+            hud.innerHTML += `${id.slice(0, 6)}: ${pos.lat}, ${pos.lon}<br>`;
+          } else if (!clientOrder.includes(id)) {
+            clientOrder.push(id);
           }
-          hud.innerHTML += `${id.slice(0, 6)} ▶ ${pos.lat}, ${pos.lon}<br>`;
         }
       }
-      setTimeout(() => hud.innerHTML = '', 5000);
+      setTimeout(() => { hud.innerHTML = ''; }, 5000);
     });
 
-    socket.on('removeClient', id => {
+    socket.on('removeClient', (id) => {
       if (otherPlayers[id]) {
         otherPlayers[id].dispose();
         delete otherPlayers[id];
       }
+      clientOrder = clientOrder.filter(cid => cid !== id);
     });
 
-    socket.on('droppedCube', ({ lat, lon }) => {
+    socket.on('droppedCube', ({ id, lat, lon }) => {
       dropCubeAt(lat, lon);
     });
 
     canvas.addEventListener('pointerdown', () => {
-      if (currentLat != null && currentLon != null) {
+      if (currentLat && currentLon) {
         socket.emit('dropCube', { lat: currentLat, lon: currentLon });
       }
     });
 
-    function startGps() {
-      if (!navigator.geolocation) {
-        console.warn("Geolocation not supported.");
-        return;
+    function startGpsTracking() {
+      if ('geolocation' in navigator) {
+        navigator.geolocation.watchPosition(
+          pos => {
+            const lat = +pos.coords.latitude.toFixed(5);
+            const lon = +pos.coords.longitude.toFixed(5);
+            currentLat = lat;
+            currentLon = lon;
+
+            if (!baseLat || !baseLon) {
+              baseLat = lat;
+              baseLon = lon;
+            }
+
+            if (lat !== lastLat || lon !== lastLon) {
+              lastLat = lat;
+              lastLon = lon;
+              socket.emit('gpsUpdate', { lat, lon });
+
+              const myPos = latLonToBabylon(lat, lon);
+              camera.position.x = myPos.x;
+              camera.position.z = myPos.z;
+            }
+          },
+          err => console.warn('GPS error', err),
+          { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+        );
+      } else {
+        console.warn('Geolocation not supported');
       }
-      navigator.geolocation.watchPosition(pos => {
-        const lat = +pos.coords.latitude.toFixed(6);
-        const lon = +pos.coords.longitude.toFixed(6);
-        currentLat = lat;
-        currentLon = lon;
-
-        if (!baseLat || !baseLon) {
-          baseLat = lat;
-          baseLon = lon;
-        }
-
-        if (lat !== lastLat || lon !== lastLon) {
-          lastLat = lat;
-          lastLon = lon;
-          socket.emit('gpsUpdate', { lat, lon });
-
-          const myPos = latLonToBabylon(lat, lon);
-          camera.position.x = myPos.x;
-          camera.position.z = myPos.z;
-        }
-      }, err => console.warn('GPS error', err),
-      { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 });
     }
 
-    startGps();
-    engine.runRenderLoop(() => scene.render());
-    window.addEventListener('resize', () => engine.resize());
+    startGpsTracking();
+
+    engine.runRenderLoop(() => {
+      scene.render();
+    });
+
+    window.addEventListener('resize', () => {
+      engine.resize();
+    });
   </script>
 </body>
 </html>
