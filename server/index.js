@@ -2,15 +2,23 @@ const express = require('express');
 const http    = require('http');
 const { Server } = require('socket.io');
 const path    = require('path');
+const fs      = require('fs');
 
 const app    = express();
 const server = http.createServer(app);
-const io     = new Server(server, { cors: { origin: true }});
+const io     = new Server(server, {
+  cors: {
+    origin: '*',          // Render serves your site on its own domain; allow all for simplicity
+    methods: ['GET','POST']
+  }
+});
 
+// ===== In-memory state =====
 const clients       = {}; // { socketId: { lat, lon } }
 const droppedBlocks = []; // persisted world blocks
 const diagSamples   = {}; // { socketId: { t, device, lat, lon, accuracy, proj:{x,y,z}, mesh:{x,y,z} } }
 
+// ===== Socket handlers =====
 io.on('connection', (socket) => {
   clients[socket.id] = { lat: null, lon: null };
 
@@ -77,8 +85,23 @@ setInterval(() => {
   }
 }, 1000);
 
-// Static hosting for /public
-app.use(express.static(path.join(__dirname, 'public')));
+// ===== Static hosting =====
+// Expect your client files in /public (next to this index.js)
+const staticRoot = path.join(__dirname, 'public');
+app.use(express.static(staticRoot));
 
+// Fallback: return index.html for "/" (and any path without a file)
+// Helps avoid "Cannot GET /"
+app.get('*', (req, res) => {
+  const file = path.join(staticRoot, 'index.html');
+  if (fs.existsSync(file)) return res.sendFile(file);
+  res.status(404).send('index.html not found in /public');
+});
+
+// ===== Start server =====
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+const HOST = '0.0.0.0'; // important for Render
+server.listen(PORT, HOST, () => {
+  console.log(`Server listening on http://${HOST}:${PORT}`);
+  console.log('Static root:', staticRoot);
+});
