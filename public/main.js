@@ -8,7 +8,6 @@ import { createSocket } from './net/socketClient.js';
 import { Events } from './net/messages.js';
 import { createClientListHUD } from './ui/hud.js';
 import { createDiagnostics } from './ui/diagnostics.js';
-import { enableGroundClick } from './ui/input.js';
 
 // ===== Engine/Scene/Camera =====
 const canvas = document.getElementById('renderCanvas');
@@ -37,18 +36,8 @@ const socket = createSocket({ on: {
     if (mesh) { mesh.dispose(); otherClients.delete(id); }
   },
   [Events.clientListUpdate]: (clients) => clientHUD.set(clients),
-  [Events.initialBlocks]: (blocks) => {
-    blocks?.forEach(({lat, lon}) => {
-      const p = latLonToWorld({ lat, lon });
-      const b = createBox(scene, { name:`block_${lat.toFixed(3)}_${lon.toFixed(3)}`, color:'green', size:1 });
-      b.position.set(p.x, p.y, p.z);
-    });
-  },
-  [Events.createBlock]: ({ lat, lon }) => {
-    const p = latLonToWorld({ lat, lon });
-    const b = createBox(scene, { name:`block_${lat.toFixed(3)}_${lon.toFixed(3)}`, color:'green', size:1 });
-    b.position.set(p.x, p.y, p.z);
-  }
+  [Events.initialBlocks]: (blocks) => renderBlocks(blocks),
+  [Events.createBlock]: ({ lat, lon }) => renderBlocks([{ lat, lon }])
 }});
 
 // ===== HUD =====
@@ -60,10 +49,18 @@ const diagnostics = createDiagnostics(scene, {
   getMesh: () => playerMesh
 });
 
-// ===== Interaction: click to drop =====
-enableGroundClick(scene, { onDrop: ({ lat, lon }) => socket.emitDrop({ lat, lon }) });
+// ===== Blocks Rendering =====
+function renderBlocks(blocks) {
+  blocks?.forEach(({lat, lon}) => {
+    const p = latLonToWorld({ lat, lon });
+    const b = createBox(scene, { name:`block_${lat.toFixed(3)}_${lon.toFixed(3)}`, color:'green', size:1 });
+    b.position.set(p.x, p.y, p.z);
+  });
+}
 
 // ===== Geolocation =====
+let latestGPS = null;
+
 (async function ensurePermissions(){
   try { 
     if (navigator.permissions) { 
@@ -76,6 +73,7 @@ enableGroundClick(scene, { onDrop: ({ lat, lon }) => socket.emitDrop({ lat, lon 
 navigator.geolocation.watchPosition(
   (pos) => {
     const { latitude: lat, longitude: lon } = pos.coords;
+    latestGPS = { lat, lon };
     const p = latLonToWorld({ lat, lon });
     playerMesh.position.set(p.x, p.y, p.z);
 
@@ -91,6 +89,21 @@ navigator.geolocation.watchPosition(
   (err) => console.warn('GPS error', err),
   { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
 );
+
+// ===== Interaction: click to drop at current GPS =====
+canvas.addEventListener('pointerdown', () => {
+  if (!latestGPS) return;
+  socket.emitDrop({ lat: latestGPS.lat, lon: latestGPS.lon });
+});
+
+// ===== Mobile Device Orientation Control =====
+if (window.DeviceOrientationEvent) {
+  window.addEventListener('deviceorientation', (event) => {
+    if (event.absolute || event.alpha !== null) {
+      camera.rotationOffset = event.alpha || 0;
+    }
+  }, true);
+}
 
 // ===== Render loop =====
 engine.runRenderLoop(() => scene.render());

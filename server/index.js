@@ -12,6 +12,11 @@ const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, { cors: { origin: '*', methods: ['GET','POST'] } });
 
+// Periodically sync blocks to all clients
+setInterval(() => {
+  io.emit('initialBlocks', blocks.list());
+}, 5000);
+
 io.on('connection', (socket) => {
   // Send current blocks
   socket.emit('initialBlocks', blocks.list());
