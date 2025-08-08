@@ -1,49 +1,32 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Babylon Gyro GPS Cube</title>
-  <script src="https://cdn.babylonjs.com/babylon.js"></script>
-  <script src="/socket.io/socket.io.js"></script>
+  <meta charset="utf-8" />
+  <title>GPS Multiplayer Debug</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    /* Full‐screen flex column: canvas on top, HUD below */
-    html, body {
-      margin: 0;
-      padding: 0;
-      height: 100%;
-      display: flex;
-      flex-direction: column;
-    }
-
-    /* Canvas takes 2 parts, HUD takes 1 part of available height */
-    #renderCanvas {
-      flex: 2;
-      width: 100%;
-      touch-action: none;
-      display: block;
-    }
-
-    #hud {
-      flex: 1;
-      width: 100%;
-      box-sizing: border-box;
-      padding: 5px;
-      background: rgba(0, 0, 0, 0.5);
-      color: white;
-      font-family: monospace;
-      font-size: 12px;
-      overflow-y: auto;
-    }
+    html, body { width:100%; height:100%; margin:0; overflow:hidden; background:#111; }
+    #renderCanvas { width:100%; height:70vh; touch-action:none; display:block; }
+    #hud { padding:10px; color:#eee; font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    #clientList { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; white-space:pre-wrap }
   </style>
 </head>
 <body>
-  <!-- 3D view -->
   <canvas id="renderCanvas"></canvas>
+  <div id="hud">
+    <div><b>Clients:</b></div>
+    <div id="clientList">—</div>
+  </div>
 
-  <!-- Client ID + coordinates -->
-  <div id="hud"></div>
+  <!-- libs -->
+  <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4/dist/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/babylonjs@7.18.0/babylon.js"></script>
 
-  <!-- Module entry -->
-  <script type="module" src="main.js"></script>
+  <!-- app -->
+  <script src="./initScene.js"></script>
+  <script src="./initCamera.js"></script>
+  <script src="./initBox.js"></script>
+  <script src="./requestPermissions.js"></script>
+  <script src="./main.js"></script>
 </body>
 </html>
