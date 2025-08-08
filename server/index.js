@@ -7,10 +7,7 @@ const fs      = require('fs');
 const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, {
-  cors: {
-    origin: '*',          // Render serves your site on its own domain; allow all for simplicity
-    methods: ['GET','POST']
-  }
+  cors: { origin: '*', methods: ['GET','POST'] }
 });
 
 // ===== In-memory state =====
@@ -86,12 +83,12 @@ setInterval(() => {
 }, 1000);
 
 // ===== Static hosting =====
-// Expect your client files in /public (next to this index.js)
-const staticRoot = path.join(__dirname, 'public');
+// Public lives one level up from /server
+const staticRoot = path.join(__dirname, '..', 'public');
 app.use(express.static(staticRoot));
 
-// Fallback: return index.html for "/" (and any path without a file)
-// Helps avoid "Cannot GET /"
+// Fallback: return index.html for "/" (and any non-file path)
+// Avoids "Cannot GET /" on Render
 app.get('*', (req, res) => {
   const file = path.join(staticRoot, 'index.html');
   if (fs.existsSync(file)) return res.sendFile(file);
