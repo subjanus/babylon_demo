@@ -7,25 +7,24 @@ const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, { cors: { origin: true }});
 
-const clients       = {};       // {socketId: { lat, lon }}
-const droppedBlocks = [];       // if you use block-drops elsewhere
-const diagSamples   = {};       // { socketId: { t, device, lat, lon, accuracy, proj:{x,y,z}, mesh:{x,y,z} } }
+const clients       = {}; // { socketId: { lat, lon } }
+const droppedBlocks = []; // persisted world blocks
+const diagSamples   = {}; // { socketId: { t, device, lat, lon, accuracy, proj:{x,y,z}, mesh:{x,y,z} } }
 
-// --- SOCKET HANDLERS ---
 io.on('connection', (socket) => {
   clients[socket.id] = { lat: null, lon: null };
 
-  // Send existing blocks if you have that feature
+  // Send any existing blocks to the newcomer
   socket.emit('initialBlocks', droppedBlocks);
 
-  // GPS updates from client
+  // Receive GPS updates and broadcast
   socket.on('gpsUpdate', ({ lat, lon }) => {
     clients[socket.id] = { lat, lon };
     socket.broadcast.emit('updateClientPosition', { id: socket.id, lat, lon });
     io.emit('clientListUpdate', clients);
   });
 
-  // Optional: user drops a cube (persist + broadcast)
+  // Optional: drop cube at given lat/lon (persist + broadcast)
   socket.on('dropCube', ({ lat, lon }) => {
     const block = { lat, lon };
     droppedBlocks.push(block);
@@ -45,7 +44,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// Periodic server-side pairwise diagnostics (laptop vs iphone, etc.)
+// Periodic cross-device diagnostics (pairwise)
 setInterval(() => {
   const recent = Object.entries(diagSamples)
     .map(([id, s]) => ({ id, s }))
@@ -78,9 +77,8 @@ setInterval(() => {
   }
 }, 1000);
 
-// --- STATIC ---
+// Static hosting for /public
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- START ---
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
