@@ -1,8 +1,8 @@
 {
-  "name": "gps-multiplayer",
+  "name": "gps-multiplayer-phase1",
   "version": "1.0.0",
   "private": true,
-  "description": "GPS multiplayer demo with diagnostics HUD",
+  "description": "Phase 1 refactor: core/world extraction",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",

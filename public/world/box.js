@@ -1,4 +1,4 @@
-function initBox(scene, { name = 'box', size = 1.5, color = 'purple' } = {}) {
+export function createBox(scene, { name = 'box', size = 1.5, color = 'purple' } = {}) {
   const mesh = BABYLON.MeshBuilder.CreateBox(name, { size }, scene);
   const mat = new BABYLON.StandardMaterial(`${name}_mat`, scene);
   const colors = {
