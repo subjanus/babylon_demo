@@ -1,8 +1,8 @@
 {
-  "name": "gps-multiplayer-phase1",
-  "version": "1.0.0",
+  "name": "gps-multiplayer-v2",
+  "version": "2.0.0",
   "private": true,
-  "description": "Phase 1 refactor: core/world extraction",
+  "description": "Rebuilt GPS multiplayer with clean modules and optional diagnostics",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
