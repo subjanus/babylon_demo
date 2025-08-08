@@ -13,6 +13,8 @@ window.scene = scene;
 
 const camera = initCamera(scene);
 window.camera = camera;
+// Ensure mouse/touch controls are attached (some browsers detach on context switches)
+camera.attachControl(scene.getEngine().getRenderingCanvas(), true);
 
 // Local player mesh
 const playerMesh = initBox(scene, { name: 'playerCube', color: 'purple', size: 1.5 });
@@ -21,7 +23,7 @@ window.playerMesh = playerMesh;
 // Map of other clients
 const otherClients = new Map(); // id -> mesh
 
-// Ground-click → drop a block (kept from your previous behavior)
+// Ground-click → drop a block
 scene.onPointerObservable.add((pointerInfo) => {
   if (pointerInfo.type !== BABYLON.PointerEventTypes.POINTERDOWN) return;
   const pick = scene.pick(scene.pointerX, scene.pointerY);
@@ -172,8 +174,11 @@ requestGeoPermissions().then(() => {
       const p = latLonToWorld(lat, lon);
       playerMesh.position.set(p.x, p.y, p.z);
 
-      // Camera follows player
-      if (camera && camera.lockedTarget !== playerMesh) camera.lockedTarget = playerMesh;
+      // ✅ Always maintain follow & controls (fix for camera not tracking/dragging)
+      if (camera) {
+        camera.lockedTarget = playerMesh; // re-lock every tick
+        camera.attachControl(scene.getEngine().getRenderingCanvas(), true); // ensure controls stay active
+      }
 
       // Network + diagnostics
       socket.emit('gpsUpdate', { lat, lon });
