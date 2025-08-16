@@ -1,58 +1,49 @@
 const express = require('express');
-const http    = require('http');
+const http = require('http');
 const { Server } = require('socket.io');
-const path    = require('path');
-const fs      = require('fs');
 
-const clients  = require('./modules/clients.js');
-const blocks   = require('./modules/blocks.js');
-const diag     = require('./modules/diagnostics.js');
-
-const app    = express();
+const app = express();
 const server = http.createServer(app);
-const io     = new Server(server, { cors: { origin: '*', methods: ['GET','POST'] } });
+const io = new Server(server);
 
-// Periodically sync blocks to all clients
-setInterval(() => {
-  io.emit('initialBlocks', blocks.list());
-}, 5000);
+let color = '#ff0000';
+const clients = {};
 
 io.on('connection', (socket) => {
-  // Send current blocks
-  socket.emit('initialBlocks', blocks.list());
+  clients[socket.id] = { lat: null, lon: null };
 
-  // GPS updates
-  socket.on('gpsUpdate', ({ lat, lon }) => {
-    clients.update(socket.id, lat, lon);
-    socket.broadcast.emit('updateClientPosition', { id: socket.id, lat, lon });
-    io.emit('clientListUpdate', clients.all());
+  socket.emit('colorUpdate', color);
+
+  socket.on('toggleColor', () => {
+    color = color === '#ff0000' ? '#00ff00' : '#ff0000';
+    io.emit('colorUpdate', color);
   });
 
-  // Drop block
+  socket.on('gpsUpdate', ({ lat, lon }) => {
+    clients[socket.id] = { lat, lon };
+    socket.broadcast.emit('updateClientPosition', {
+      id: socket.id,
+      lat,
+      lon
+    });
+    io.emit('clientListUpdate', clients);
+  });
+
   socket.on('dropCube', ({ lat, lon }) => {
-    blocks.add(lat, lon);
-    io.emit('createBlock', { lat, lon });
+    socket.broadcast.emit('droppedCube', { id: socket.id, lat, lon });
+    socket.emit('droppedCube', { id: socket.id, lat, lon }); // Echo to sender
   });
 
   socket.on('disconnect', () => {
-    clients.remove(socket.id);
+    delete clients[socket.id];
     io.emit('removeClient', socket.id);
-    io.emit('clientListUpdate', clients.all());
+    io.emit('clientListUpdate', clients);
   });
 });
 
-// Optionally start diagnostics loop
-diag.start(io);
-
-// Static
-const staticRoot = path.join(__dirname, '..', 'public');
-app.use(express.static(staticRoot));
-app.get('*', (req, res) => {
-  const file = path.join(staticRoot, 'index.html');
-  if (fs.existsSync(file)) return res.sendFile(file);
-  res.status(404).send('index.html not found');
-});
+app.use(express.static('public'));
 
 const PORT = process.env.PORT || 3000;
-const HOST = '0.0.0.0';
-server.listen(PORT, HOST, () => console.log(`Server listening on http://${HOST}:${PORT}`));
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
