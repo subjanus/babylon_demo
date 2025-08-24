@@ -1,63 +1,62 @@
 const express = require('express');
 const http    = require('http');
 const { Server } = require('socket.io');
+const { Scene } = require('./scene');
+const { registry } = require('./actions');
+
+const COLORS = ["#00A3FF","#FFCC00","#34D399","#F472B6","#F59E0B","#22D3EE","#A78BFA"];
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// Fun color rotation for players
-const COLORS = ["#00A3FF", "#FFCC00", "#34D399", "#F472B6", "#F59E0B", "#22D3EE", "#A78BFA"];
-let nextColorIdx = 0;
+app.use(express.static('public'));
 
-// Authoritative in-memory state
-const clients = {};          // id -> { lat, lon, color }
-const droppedBlocks = [];    // [{ lat, lon }]
+// Authoritative state
+const scene = new Scene();
+const clients = new Map();
+let colorIdx = 0;
+
+const ctx = {
+  scene,
+  clients,
+  ref: { lat:null, lon:null },
+  broadcastScene: () => io.emit("sceneUpdate", scene.snapshot()),
+};
 
 io.on('connection', (socket) => {
-  console.log('client connected', socket.id);
+  const color = COLORS[colorIdx++ % COLORS.length];
+  clients.set(socket.id, { color });
+  socket.emit("welcome", { color });
+  socket.emit("sceneUpdate", scene.snapshot());
 
-  // Assign an initial color and register client
-  const color = COLORS[nextColorIdx++ % COLORS.length];
-  clients[socket.id] = { lat: null, lon: null, color };
-
-  // Send snapshot to newcomer
-  socket.emit('initialState', { clients, droppedBlocks, myColor: color });
-  io.emit('clientListUpdate', clients);
-
-  socket.on('gpsUpdate', ({ lat, lon }) => {
-    if (!clients[socket.id]) return;
-    clients[socket.id].lat = lat;
-    clients[socket.id].lon = lon;
-    socket.broadcast.emit('updateClientPosition', { id: socket.id, lat, lon });
-    io.emit('clientListUpdate', clients);
+  socket.on("gpsUpdate", ({ lat, lon }) => {
+    const c = clients.get(socket.id) || {};
+    clients.set(socket.id, { ...c, lat, lon });
+    socket.broadcast.emit("peerPosition", { id: socket.id, lat, lon });
   });
 
-  socket.on('dropCube', ({ lat, lon }) => {
-    if (typeof lat !== 'number' || typeof lon !== 'number') return;
-    droppedBlocks.push({ lat, lon });
-    io.emit('createBlock', { lat, lon });
+  socket.on("invoke", ({ action, args = {}, id }) => {
+    const fn = registry[action];
+    if (!fn) return socket.emit("invokeResult", { id, ok:false, error:"unknown_action" });
+    try {
+      const result = fn({ ...ctx }, args, { socket, io });
+      socket.emit("invokeResult", { id, ...result });
+    } catch(e) {
+      socket.emit("invokeResult", { id, ok:false, error:e.message });
+    }
   });
 
-  socket.on('toggleColor', () => {
-    const current = clients[socket.id]?.color;
-    if (!current) return;
-    let idx = COLORS.indexOf(current);
-    if (idx < 0) idx = 0;
-    const next = COLORS[(idx + 1) % COLORS.length];
-    clients[socket.id].color = next;
-    io.emit('colorUpdate', { id: socket.id, color: next });
+  socket.on("objectEvent", ({ objectId, event, args = {} }) => {
+    const fn = registry[event];
+    if (fn) fn({ ...ctx }, { id:objectId, ...args }, { socket, io });
   });
 
-  socket.on('disconnect', () => {
-    console.log('client disconnected', socket.id);
-    delete clients[socket.id];
-    io.emit('removeClient', socket.id);
-    io.emit('clientListUpdate', clients);
+  socket.on("disconnect", () => {
+    clients.delete(socket.id);
+    io.emit("removeClient", socket.id);
   });
 });
 
-app.use(express.static('public'));
-
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+server.listen(PORT, () => console.log(`Server running http://localhost:${PORT}`));
