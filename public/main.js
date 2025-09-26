@@ -10,7 +10,9 @@ const state = {
   others: new Map(),  // id -> { mesh, color, lat, lon }
   blocks: new Map(),  // id -> { lat, lon, color, mesh }
   myColor: "#00A3FF",
-  clientCount: null
+  clientCount: null,
+  myLocalX: 0,
+  myLocalZ: 0
 };
 
 const canvas = document.getElementById("renderCanvas");
@@ -61,22 +63,30 @@ function updateHUD(clientsCount = null) {
   hud.textContent = parts.join("  |  ");
 }
 
+function offsetToPlayerFrame(x, z) {
+  return {
+    x: x - (state.myLocalX ?? 0),
+    z: z - (state.myLocalZ ?? 0)
+  };
+}
+
 function realizeBlock(rec) {
   if (!rec || state.refLat == null) return;
   const { x, z } = latLonToLocal(rec.lat, rec.lon, state.refLat, state.refLon);
+  const rel = offsetToPlayerFrame(x, z);
   if (!rec.mesh) {
     const block = BABYLON.MeshBuilder.CreateBox("block", { size: 0.8 }, scene);
     const mat = new BABYLON.StandardMaterial("blockMat", scene);
     const hex = rec.color || "#9C62E0";
     mat.diffuseColor = BABYLON.Color3.FromHexString(hex);
     block.material = mat;
-    block.position = new BABYLON.Vector3(x, 0.4, z);
+    block.position = new BABYLON.Vector3(rel.x, 0.4, rel.z);
     rec.mesh = block;
     return;
   }
   const hex = rec.color || "#9C62E0";
   rec.mesh.material.diffuseColor = BABYLON.Color3.FromHexString(hex);
-  rec.mesh.position.set(x, 0.4, z);
+  rec.mesh.position.set(rel.x, 0.4, rel.z);
 }
 
 function upsertBlock({ id, lat, lon, color }) {
@@ -127,7 +137,8 @@ function setMyColor(hex) {
 function positionOther(rec) {
   if (!rec || rec.lat == null || rec.lon == null || state.refLat == null) return;
   const { x, z } = latLonToLocal(rec.lat, rec.lon, state.refLat, state.refLon);
-  rec.mesh.position.set(x, 0.8, z);
+  const rel = offsetToPlayerFrame(x, z);
+  rec.mesh.position.set(rel.x, 0.8, rel.z);
 }
 
 function realizePendingEntities() {
@@ -161,7 +172,8 @@ function startGps() {
 
     // Move camera in local frame
     const { x, z } = latLonToLocal(lat, lon, state.refLat, state.refLon);
-    camera.position.x = x; camera.position.z = z; camera.position.y = 2;
+    state.myLocalX = x;
+    state.myLocalZ = z;
 
     // Emit only on change
     if (lat !== state.myLat || lon !== state.myLon) {
@@ -170,9 +182,7 @@ function startGps() {
       updateHUD();
     }
 
-    if (firstFix) {
-      realizePendingEntities();
-    }
+    realizePendingEntities();
   }, err => {
     console.error("GPS error", err);
     hud.textContent = `GPS error: ${err.message}`;
