@@ -12,7 +12,8 @@ let nextColorIdx = 0;
 
 // Authoritative in-memory state
 const clients = {};          // id -> { lat, lon, color }
-const droppedBlocks = [];    // [{ lat, lon }]
+const droppedBlocks = [];    // [{ id, lat, lon, color }]
+let nextBlockId = 1;
 
 io.on('connection', (socket) => {
   console.log('client connected', socket.id);
@@ -35,8 +36,10 @@ io.on('connection', (socket) => {
 
   socket.on('dropCube', ({ lat, lon }) => {
     if (typeof lat !== 'number' || typeof lon !== 'number') return;
-    droppedBlocks.push({ lat, lon });
-    io.emit('createBlock', { lat, lon });
+    const color = clients[socket.id]?.color || null;
+    const block = { id: nextBlockId++, lat, lon, color };
+    droppedBlocks.push(block);
+    io.emit('createBlock', block);
   });
 
   socket.on('toggleColor', () => {

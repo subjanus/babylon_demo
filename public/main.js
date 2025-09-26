@@ -8,8 +8,9 @@ const state = {
   refLat: null, refLon: null,
   myLat: null,  myLon: null,
   others: new Map(),  // id -> { mesh, color, lat, lon }
-  blocks: new Map(),  // key -> { lat, lon, mesh }
-  myColor: "#00A3FF"
+  blocks: new Map(),  // id -> { lat, lon, color, mesh }
+  myColor: "#00A3FF",
+  clientCount: null
 };
 
 const canvas = document.getElementById("renderCanvas");
@@ -54,12 +55,10 @@ function updateHUD(clientsCount = null) {
     `You: ${lat}, ${lon}`,
     state.refLat != null ? `Ref: ${state.refLat.toFixed(5)}, ${state.refLon.toFixed(5)}` : "Ref: …",
   ];
-  if (clientsCount != null) parts.push(`Clients: ${clientsCount}`);
+  if (clientsCount != null) state.clientCount = clientsCount;
+  if (state.clientCount != null) parts.push(`Clients: ${state.clientCount}`);
+  parts.push(`Cubes: ${state.blocks.size}`);
   hud.textContent = parts.join("  |  ");
-}
-
-function blockKey(lat, lon) {
-  return `${lat}:${lon}`;
 }
 
 function realizeBlock(rec) {
@@ -68,26 +67,31 @@ function realizeBlock(rec) {
   if (!rec.mesh) {
     const block = BABYLON.MeshBuilder.CreateBox("block", { size: 0.8 }, scene);
     const mat = new BABYLON.StandardMaterial("blockMat", scene);
-    mat.diffuseColor = new BABYLON.Color3(0.6, 0.3, 0.9);
+    const hex = rec.color || "#9C62E0";
+    mat.diffuseColor = BABYLON.Color3.FromHexString(hex);
     block.material = mat;
     block.position = new BABYLON.Vector3(x, 0.4, z);
     rec.mesh = block;
     return;
   }
+  const hex = rec.color || "#9C62E0";
+  rec.mesh.material.diffuseColor = BABYLON.Color3.FromHexString(hex);
   rec.mesh.position.set(x, 0.4, z);
 }
 
-function placeBlockAt(lat, lon) {
-  const key = blockKey(lat, lon);
-  let rec = state.blocks.get(key);
+function upsertBlock({ id, lat, lon, color }) {
+  if (id == null) return;
+  let rec = state.blocks.get(id);
   if (!rec) {
-    rec = { lat, lon, mesh: null };
-    state.blocks.set(key, rec);
+    rec = { id, lat: null, lon: null, color: color || null, mesh: null };
+    state.blocks.set(id, rec);
   }
-  // Keep latest coordinates for when the reference frame becomes available.
-  rec.lat = lat;
-  rec.lon = lon;
+  if (typeof lat === "number") rec.lat = lat;
+  if (typeof lon === "number") rec.lon = lon;
+  const nextColor = color || rec.color || "#9C62E0";
+  rec.color = nextColor;
   realizeBlock(rec);
+  updateHUD();
 }
 
 function ensureOther(id, color) {
@@ -188,7 +192,7 @@ socket.on("initialState", ({ clients, droppedBlocks, myColor }) => {
       positionOther(rec);
     }
   });
-  droppedBlocks.forEach(({ lat, lon }) => placeBlockAt(lat, lon));
+  droppedBlocks.forEach(block => upsertBlock(block));
   updateHUD(Object.keys(clients).length);
 });
 
@@ -217,7 +221,7 @@ socket.on("updateClientPosition", ({ id, lat, lon }) => {
 
 socket.on("removeClient", id => removeOther(id));
 
-socket.on("createBlock", ({ lat, lon }) => placeBlockAt(lat, lon));
+socket.on("createBlock", block => upsertBlock(block));
 
 socket.on("colorUpdate", ({ id, color }) => {
   if (id === socket.id) { setMyColor(color); return; }
