@@ -7,8 +7,8 @@ import { latLonToLocal, toFix5 } from "./geo.js";
 const state = {
   refLat: null, refLon: null,
   myLat: null,  myLon: null,
-  others: new Map(),  // id -> { mesh, color }
-  blocks: [],
+  others: new Map(),  // id -> { mesh, color, lat, lon }
+  blocks: new Map(),  // key -> { lat, lon, mesh }
   myColor: "#00A3FF"
 };
 
@@ -58,36 +58,77 @@ function updateHUD(clientsCount = null) {
   hud.textContent = parts.join("  |  ");
 }
 
-function placeBlockAt(lat, lon) {
-  if (state.refLat == null) return; // wait for frame
-  const { x, z } = latLonToLocal(lat, lon, state.refLat, state.refLon);
-  const block = BABYLON.MeshBuilder.CreateBox("block", { size: 0.8 }, scene);
-  const mat = new BABYLON.StandardMaterial("blockMat", scene);
-  mat.diffuseColor = new BABYLON.Color3(0.6, 0.3, 0.9);
-  block.material = mat;
-  block.position = new BABYLON.Vector3(x, 0.4, z);
-  state.blocks.push(block);
+function blockKey(lat, lon) {
+  return `${lat}:${lon}`;
 }
 
-function ensureOther(id, color = "#FFCC00") {
-  if (state.others.has(id)) return state.others.get(id);
-  const mesh = BABYLON.MeshBuilder.CreateSphere(`p_${id}`, { diameter: 1.6 }, scene);
-  const mat = new BABYLON.StandardMaterial(`p_${id}_mat`, scene);
-  mat.diffuseColor = BABYLON.Color3.FromHexString(color);
-  mesh.material = mat;
-  const rec = { mesh, color };
-  state.others.set(id, rec);
+function realizeBlock(rec) {
+  if (!rec || state.refLat == null) return;
+  const { x, z } = latLonToLocal(rec.lat, rec.lon, state.refLat, state.refLon);
+  if (!rec.mesh) {
+    const block = BABYLON.MeshBuilder.CreateBox("block", { size: 0.8 }, scene);
+    const mat = new BABYLON.StandardMaterial("blockMat", scene);
+    mat.diffuseColor = new BABYLON.Color3(0.6, 0.3, 0.9);
+    block.material = mat;
+    block.position = new BABYLON.Vector3(x, 0.4, z);
+    rec.mesh = block;
+    return;
+  }
+  rec.mesh.position.set(x, 0.4, z);
+}
+
+function placeBlockAt(lat, lon) {
+  const key = blockKey(lat, lon);
+  let rec = state.blocks.get(key);
+  if (!rec) {
+    rec = { lat, lon, mesh: null };
+    state.blocks.set(key, rec);
+  }
+  // Keep latest coordinates for when the reference frame becomes available.
+  rec.lat = lat;
+  rec.lon = lon;
+  realizeBlock(rec);
+}
+
+function ensureOther(id, color) {
+  let rec = state.others.get(id);
+  if (!rec) {
+    const mesh = BABYLON.MeshBuilder.CreateSphere(`p_${id}`, { diameter: 1.6 }, scene);
+    const mat = new BABYLON.StandardMaterial(`p_${id}_mat`, scene);
+    mesh.material = mat;
+    rec = { mesh, color: null, lat: null, lon: null };
+    state.others.set(id, rec);
+  }
+  const nextColor = color ?? rec.color ?? "#FFCC00";
+  if (nextColor !== rec.color) {
+    rec.color = nextColor;
+    rec.mesh.material.diffuseColor = BABYLON.Color3.FromHexString(nextColor);
+  }
   return rec;
 }
 
 function removeOther(id) {
   const rec = state.others.get(id);
-  if (rec) { rec.mesh.dispose(); state.others.delete(id); }
+  if (rec) {
+    rec.mesh.dispose();
+    state.others.delete(id);
+  }
 }
 
 function setMyColor(hex) {
   state.myColor = hex;
   me.material.diffuseColor = BABYLON.Color3.FromHexString(hex);
+}
+
+function positionOther(rec) {
+  if (!rec || rec.lat == null || rec.lon == null || state.refLat == null) return;
+  const { x, z } = latLonToLocal(rec.lat, rec.lon, state.refLat, state.refLon);
+  rec.mesh.position.set(x, 0.8, z);
+}
+
+function realizePendingEntities() {
+  state.blocks.forEach(rec => realizeBlock(rec));
+  state.others.forEach(rec => positionOther(rec));
 }
 
 // --- Permissions for iOS gyro ---
@@ -108,7 +149,11 @@ function startGps() {
     const lat = toFix5(latitude);
     const lon = toFix5(longitude);
 
-    if (state.refLat == null) { state.refLat = lat; state.refLon = lon; }
+    const firstFix = state.refLat == null;
+    if (firstFix) {
+      state.refLat = lat;
+      state.refLon = lon;
+    }
 
     // Move camera in local frame
     const { x, z } = latLonToLocal(lat, lon, state.refLat, state.refLon);
@@ -119,6 +164,10 @@ function startGps() {
       state.myLat = lat; state.myLon = lon;
       socket.emit("gpsUpdate", { lat, lon });
       updateHUD();
+    }
+
+    if (firstFix) {
+      realizePendingEntities();
     }
   }, err => {
     console.error("GPS error", err);
@@ -132,10 +181,11 @@ socket.on("initialState", ({ clients, droppedBlocks, myColor }) => {
   if (myColor) setMyColor(myColor);
   Object.entries(clients).forEach(([id, c]) => {
     if (id === socket.id) return;
-    const rec = ensureOther(id, c.color || "#FFCC00");
-    if (c.lat != null && c.lon != null && state.refLat != null) {
-      const { x, z } = latLonToLocal(c.lat, c.lon, state.refLat, state.refLon);
-      rec.mesh.position.set(x, 0.8, z);
+    const rec = ensureOther(id, c.color);
+    if (c.lat != null && c.lon != null) {
+      rec.lat = c.lat;
+      rec.lon = c.lon;
+      positionOther(rec);
     }
   });
   droppedBlocks.forEach(({ lat, lon }) => placeBlockAt(lat, lon));
@@ -147,10 +197,11 @@ socket.on("clientListUpdate", (clients) => {
   [...state.others.keys()].forEach(id => { if (!ids.has(id) || id === socket.id) removeOther(id); });
   Object.entries(clients).forEach(([id, c]) => {
     if (id === socket.id) return;
-    const rec = ensureOther(id, c.color || "#FFCC00");
-    if (c.lat != null && c.lon != null && state.refLat != null) {
-      const { x, z } = latLonToLocal(c.lat, c.lon, state.refLat, state.refLon);
-      rec.mesh.position.set(x, 0.8, z);
+    const rec = ensureOther(id, c.color);
+    if (c.lat != null && c.lon != null) {
+      rec.lat = c.lat;
+      rec.lon = c.lon;
+      positionOther(rec);
     }
   });
   updateHUD(Object.keys(clients).length);
@@ -159,9 +210,9 @@ socket.on("clientListUpdate", (clients) => {
 socket.on("updateClientPosition", ({ id, lat, lon }) => {
   if (id === socket.id) return;
   const rec = ensureOther(id);
-  if (state.refLat == null) return;
-  const { x, z } = latLonToLocal(lat, lon, state.refLat, state.refLon);
-  rec.mesh.position.set(x, 0.8, z);
+  rec.lat = lat;
+  rec.lon = lon;
+  positionOther(rec);
 });
 
 socket.on("removeClient", id => removeOther(id));
@@ -171,8 +222,6 @@ socket.on("createBlock", ({ lat, lon }) => placeBlockAt(lat, lon));
 socket.on("colorUpdate", ({ id, color }) => {
   if (id === socket.id) { setMyColor(color); return; }
   const rec = ensureOther(id, color);
-  rec.color = color;
-  rec.mesh.material.diffuseColor = BABYLON.Color3.FromHexString(color);
 });
 
 // render loop
