@@ -1,11 +1,18 @@
+// py_worker.js  (module worker)
+import { loadPyodide } from 'https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js';
+
 let pyodide;
 
 self.onmessage = async (e) => {
   const { type, code } = e.data || {};
-  if (!pyodide) {
-    importScripts('https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js');
-    pyodide = await loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.2/full/' });
-    await pyodide.runPythonAsync(`
+  try {
+    if (!pyodide) {
+      // boot logs so you can see progress
+      self.postMessage({ type: 'stdout', data: '[py] loading runtime…' });
+      pyodide = await loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.2/full/' });
+      self.postMessage({ type: 'stdout', data: '[py] runtime loaded, initializing…' });
+
+      await pyodide.runPythonAsync(`
 import sys, asyncio, math, random, time
 from pyodide.ffi import create_proxy
 
@@ -25,6 +32,7 @@ def _dispatch(msg: dict):
 
 def make_box(x=0.0, y=0.5, z=0.0, id=None, r=0.3, g=0.8, b=1.0):
     if id is None:
+        import time, random
         id = f"box-{int(time.time()*1000)}-{int(random.random()*1e6)}"
     _dispatch({"type":"spawn","data":{"id": id, "kind":"box", "pos":[float(x), float(y), float(z)], "color":[float(r), float(g), float(b)]}})
     print(f"spawned box id={id} at ({x},{y},{z})")
@@ -39,15 +47,17 @@ async def _async_exec(src: str):
     if fn and asyncio.iscoroutinefunction(fn):
         await asyncio.wait_for(fn(), timeout=0.5)
 `);
-    self.postMessage({ type: 'ready' });
-    self.postMessage_py = (msg) => postMessage(msg);
-  }
-
-  if (type === 'exec' && code) {
-    try {
-      await pyodide.runPythonAsync(`await _async_exec(${JSON.stringify(code)})`);
-    } catch (err) {
-      postMessage({ type:'stderr', data: String(err) });
+      // expose bridge for Python -> JS
+      self.postMessage_py = (msg) => self.postMessage(msg);
+      self.postMessage({ type: 'ready' });
+      self.postMessage({ type: 'stdout', data: '[py] ready.' });
+      return;
     }
+
+    if (type === 'exec' && code) {
+      await pyodide.runPythonAsync(`await _async_exec(${JSON.stringify(code)})`);
+    }
+  } catch (err) {
+    self.postMessage({ type: 'stderr', data: '[boot/exec error] ' + String(err) });
   }
 };

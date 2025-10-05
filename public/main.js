@@ -113,7 +113,9 @@ document.getElementById('btnTest').onclick = () => {
 };
 
 // ---------- Pyodide console ----------
-const worker = new Worker('./py_worker.js'); // classic worker so importScripts works
+const worker = new Worker('./py_worker.js', { type: 'module' });
+worker.onerror = (e) => println('[worker error] ' + e.message);
+worker.onmessageerror = (e) => println('[worker msg error]'); // classic worker so importScripts works
 let consoleReady = false;
 
 worker.onmessage = (e) => {
