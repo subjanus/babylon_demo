@@ -3,40 +3,23 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-  <title>Babylon + Pyodide + Socket.IO — Client Console</title>
+  <title>Babylon + Pyodide + Socket.IO</title>
   <style>
-    html, body { width:100%; height:100%; margin:0; overflow:hidden; background:#0b0f14; color:#e6e6e6; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-    #ui { position:fixed; top:8px; left:8px; display:flex; gap:8px; flex-wrap:wrap; z-index:10; }
-    .btn { padding:6px 10px; border:1px solid #3a4b5c; background:#15202b; color:#e6e6e6; border-radius:6px; cursor:pointer; }
-    #peerPanel { position:fixed; top:8px; right:8px; background:#0f1620aa; padding:8px; border-radius:8px; font-size:12px; max-width: 40vw; }
+    html, body { width:100%; height:100%; margin:0; overflow:hidden; background:#0b0f14; color:#e6e6e6; font-family: system-ui, sans-serif; }
     #canvas { width:100%; height:100%; touch-action: none; }
     #consoleBar { position:fixed; left:0; right:0; bottom:0; background:#0e141b; border-top:1px solid #203040; padding:8px; display:flex; gap:8px; }
-    #code { flex:2; min-height:38px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    #out { flex:1; height:100px; background:#0a1118; border:1px solid #203040; padding:6px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
-    .badge { display:inline-block; padding:2px 6px; border-radius:4px; background:#203040; margin-left:6px; font-size:11px; }
+    #code { flex:2; min-height:38px; font-family: monospace; }
+    #out { flex:1; height:100px; background:#0a1118; border:1px solid #203040; padding:6px; overflow:auto; font-family: monospace; font-size:12px; }
   </style>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
-  <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
 </head>
 <body>
-  <div id="ui">
-    <button class="btn" id="btnCamera">Camera: ArcRotate</button>
-    <button class="btn" id="btnGeo">GPS: Start</button>
-    <button class="btn" id="btnOrient">Device Orientation: On</button>
-    <button class="btn" id="btnTest">Test Mode</button>
-  </div>
-  <div id="peerPanel">
-    <div><strong>Peers</strong><span class="badge" id="session"></span></div>
-    <div id="peers"></div>
-  </div>
   <canvas id="canvas"></canvas>
-
   <div id="consoleBar">
-    <textarea id="code" placeholder="Type Python here, then Enter (Ctrl+Enter for newline). Example: make_box(1,0.5,0)"></textarea>
+    <textarea id="code" disabled placeholder="Loading Pyodide…"></textarea>
     <pre id="out"></pre>
   </div>
-
   <script type="module" src="./main.js"></script>
 </body>
 </html>

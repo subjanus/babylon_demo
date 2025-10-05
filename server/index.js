@@ -10,7 +10,6 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.static('public'));
 
-// presence map
 const state = new Map();
 
 function peerSummary() {
@@ -50,7 +49,6 @@ io.on('connection', (socket) => {
   socket.on('request:peers', () => socket.emit('server:peers', peerSummary()));
   socket.on('admin:peek', () => socket.emit('server:peers', peerSummary()));
 
-  // Relay shape spawns/updates to others
   socket.on('shape:spawn', (payload = {}) => {
     payload.from = id;
     socket.broadcast.emit('shape:spawn', payload);
