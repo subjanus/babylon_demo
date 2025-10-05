@@ -10,6 +10,8 @@ sessionEl.textContent = 'session ' + sessionId;
 const canvas = document.getElementById('canvas');
 const out = document.getElementById('out');
 const code = document.getElementById('code');
+code.disabled = true;
+code.placeholder = 'Loading Pyodide…';
 
 function println(s){ out.textContent += s + "\n"; out.scrollTop = out.scrollHeight; }
 
@@ -35,8 +37,8 @@ function gpsToLocal(gps) {
 function updatePeerList() {
   peersEl.innerHTML = '';
   peers.forEach((p, id) => {
-    const div = document.createElement('div');
     const gpsTxt = p.gps ? `${p.gps.lat?.toFixed(5)}, ${p.gps.lon?.toFixed(5)} ±${(p.gps.acc||0).toFixed(0)}m` : '—';
+    const div = document.createElement('div');
     div.textContent = `${id.slice(0,6)} gps: ${gpsTxt}`;
     peersEl.appendChild(div);
   });
@@ -112,15 +114,16 @@ document.getElementById('btnTest').onclick = () => {
   socket.emit('shape:spawn', { id, kind:'box', pos:[0,0.5,0], color:[0.3,0.8,1] });
 };
 
-// ---------- Pyodide console ----------
+// Module worker with diagnostics
 const worker = new Worker('./py_worker.js', { type: 'module' });
-worker.onerror = (e) => println('[worker error] ' + e.message);
-worker.onmessageerror = (e) => println('[worker msg error]'); // classic worker so importScripts works
+worker.onerror = (e) => println('[worker error] ' + (e.message ?? '(no message)'));
+worker.onmessageerror = () => println('[worker msg error]');
+
 let consoleReady = false;
 
 worker.onmessage = (e) => {
   const { type, data } = e.data || {};
-  if (type === 'ready'){ consoleReady = true; println('[py] ready'); }
+  if (type === 'ready'){ consoleReady = true; code.disabled = false; println('[py] ready'); }
   if (type === 'stdout'){ println(data); }
   if (type === 'stderr'){ println('[err] ' + data); }
   if (type === 'spawn'){

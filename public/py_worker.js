@@ -1,13 +1,13 @@
-// py_worker.js  (module worker)
+// Module worker version
 import { loadPyodide } from 'https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js';
 
 let pyodide;
+self.postMessage({ type: 'stdout', data: '[worker] boot' });
 
 self.onmessage = async (e) => {
   const { type, code } = e.data || {};
   try {
     if (!pyodide) {
-      // boot logs so you can see progress
       self.postMessage({ type: 'stdout', data: '[py] loading runtime…' });
       pyodide = await loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.2/full/' });
       self.postMessage({ type: 'stdout', data: '[py] runtime loaded, initializing…' });
@@ -47,7 +47,6 @@ async def _async_exec(src: str):
     if fn and asyncio.iscoroutinefunction(fn):
         await asyncio.wait_for(fn(), timeout=0.5)
 `);
-      // expose bridge for Python -> JS
       self.postMessage_py = (msg) => self.postMessage(msg);
       self.postMessage({ type: 'ready' });
       self.postMessage({ type: 'stdout', data: '[py] ready.' });
