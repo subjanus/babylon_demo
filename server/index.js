@@ -1,66 +1,67 @@
-const express = require('express');
-const http    = require('http');
-const { Server } = require('socket.io');
+import express from 'express';
+import http from 'http';
+import { Server } from 'socket.io';
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, { cors: { origin: '*' } });
 
-// Fun color rotation for players
-const COLORS = ["#00A3FF", "#FFCC00", "#34D399", "#F472B6", "#F59E0B", "#22D3EE", "#A78BFA"];
-let nextColorIdx = 0;
-
-// Authoritative in-memory state
-const clients = {};          // id -> { lat, lon, color }
-const droppedBlocks = [];    // [{ id, lat, lon, color }]
-let nextBlockId = 1;
-
-io.on('connection', (socket) => {
-  console.log('client connected', socket.id);
-
-  // Assign an initial color and register client
-  const color = COLORS[nextColorIdx++ % COLORS.length];
-  clients[socket.id] = { lat: null, lon: null, color };
-
-  // Send snapshot to newcomer
-  socket.emit('initialState', { clients, droppedBlocks, myColor: color });
-  io.emit('clientListUpdate', clients);
-
-  socket.on('gpsUpdate', ({ lat, lon }) => {
-    if (!clients[socket.id]) return;
-    clients[socket.id].lat = lat;
-    clients[socket.id].lon = lon;
-    socket.broadcast.emit('updateClientPosition', { id: socket.id, lat, lon });
-    io.emit('clientListUpdate', clients);
-  });
-
-  socket.on('dropCube', ({ lat, lon }) => {
-    if (typeof lat !== 'number' || typeof lon !== 'number') return;
-    const color = clients[socket.id]?.color || null;
-    const block = { id: nextBlockId++, lat, lon, color };
-    droppedBlocks.push(block);
-    io.emit('createBlock', block);
-  });
-
-  socket.on('toggleColor', () => {
-    const current = clients[socket.id]?.color;
-    if (!current) return;
-    let idx = COLORS.indexOf(current);
-    if (idx < 0) idx = 0;
-    const next = COLORS[(idx + 1) % COLORS.length];
-    clients[socket.id].color = next;
-    io.emit('colorUpdate', { id: socket.id, color: next });
-  });
-
-  socket.on('disconnect', () => {
-    console.log('client disconnected', socket.id);
-    delete clients[socket.id];
-    io.emit('removeClient', socket.id);
-    io.emit('clientListUpdate', clients);
-  });
-});
+const PORT = process.env.PORT || 3000;
 
 app.use(express.static('public'));
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+// presence map
+const state = new Map();
+
+function peerSummary() {
+  const arr = [];
+  state.forEach((v) => {
+    arr.push({
+      id: v.id, name: v.name || v.id.slice(0,5),
+      sessionId: v.sessionId, gps: v.gps || null,
+      orient: v.orient || null, lastSeen: v.lastSeen || null
+    });
+  });
+  return arr;
+}
+
+io.on('connection', (socket) => {
+  const id = socket.id;
+  const role = socket.handshake.query.role === 'admin' ? 'admin' : 'client';
+  state.set(id, { id, role, lastSeen: Date.now() });
+  io.emit('peer:join', { id, role });
+
+  socket.on('client:hello', (msg = {}) => {
+    const s = state.get(id); if (!s) return;
+    s.name = msg.name || s.name;
+    s.sessionId = msg.sessionId || s.sessionId;
+    s.lastSeen = Date.now();
+    socket.emit('server:peers', peerSummary());
+  });
+
+  socket.on('client:update', (msg = {}) => {
+    const s = state.get(id); if (!s) return;
+    if (msg.gps) s.gps = msg.gps;
+    if (msg.orient) s.orient = msg.orient;
+    s.lastSeen = Date.now();
+    socket.broadcast.emit('peer:update', { id, gps: s.gps, orient: s.orient, lastSeen: s.lastSeen });
+  });
+
+  socket.on('request:peers', () => socket.emit('server:peers', peerSummary()));
+  socket.on('admin:peek', () => socket.emit('server:peers', peerSummary()));
+
+  // Relay shape spawns/updates to others
+  socket.on('shape:spawn', (payload = {}) => {
+    payload.from = id;
+    socket.broadcast.emit('shape:spawn', payload);
+  });
+
+  socket.on('disconnect', () => {
+    state.delete(id);
+    io.emit('peer:leave', { id });
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`Server listening on http://localhost:${PORT}`);
+});

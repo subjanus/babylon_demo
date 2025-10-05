@@ -1,18 +1,14 @@
 {
-  "name": "gps-multiplayer-v2",
-  "version": "2.0.0",
+  "name": "babylon-pyodide-sio-console-demo",
+  "version": "0.2.0",
   "private": true,
-  "description": "Rebuilt GPS multiplayer with clean modules and optional diagnostics",
-  "main": "server/index.js",
+  "type": "module",
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node server/index.js"
+    "dev": "NODE_ENV=development node server/index.js"
   },
   "dependencies": {
     "express": "^4.19.2",
     "socket.io": "^4.7.5"
-  },
-  "engines": {
-    "node": ">=18"
   }
 }
