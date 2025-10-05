@@ -1,18 +1,18 @@
-# Babylon + Pyodide + Socket.IO — Local Pyodide Demo
+# Pyodide Minimal Console
 
-## Setup
-1. Place Pyodide distribution under `public/pyodide/`. You need:
-   - pyodide.js
-   - pyodide.asm.wasm
-   - python_stdlib.zip
+Client-only Python console with input/output. A tiny server echoes a message whenever code is executed.
 
-2. Deploy to Render (uses .render.yaml).
-
-3. Open the app: type Python in the bottom box. Example:
-```
-make_box(0,0.5,0)
+## Run
+```bash
+npm install
+npm start
+# open http://localhost:3000
 ```
 
-## Notes
-- Shapes are synced across clients via Socket.IO.
-- The interpreter runs in-browser via Pyodide loaded locally.
+## Switch worker
+Use the dropdown:
+- **cdn** (default): loads Pyodide from jsDelivr.
+- **local**: self-host Pyodide under `public/pyodide/` with at least:
+  - pyodide.js
+  - pyodide.asm.wasm
+  - python_stdlib.zip

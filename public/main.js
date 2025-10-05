@@ -1,29 +1,55 @@
-import { initScene } from './scene.js';
-
-const canvas = document.getElementById('canvas');
 const out = document.getElementById('out');
 const code = document.getElementById('code');
-function println(s){ out.textContent += s+"\n"; out.scrollTop=out.scrollHeight; }
+const runBtn = document.getElementById('run');
+const statusEl = document.getElementById('status');
+const workerMode = document.getElementById('workerMode');
+const echo = document.getElementById('echo');
 
-const { api } = initScene(canvas, println);
+function println(s){ out.textContent += s + "\n"; out.scrollTop = out.scrollHeight; }
+
 const socket = io();
+socket.on('code:ack', (msg)=> println(`[ack] code length=${msg.len} at ${new Date(msg.at).toLocaleTimeString()}`));
+socket.on('code:notice', (msg)=> println(`[notice from peer] code length=${msg.len} at ${new Date(msg.at).toLocaleTimeString()}`));
 
-// Worker for Pyodide
-const worker = new Worker('./py_worker.js', { type: 'module' });
-let ready=false;
-worker.onerror = e => println('[worker error] '+(e.message??'(no msg)'));
-worker.onmessage = e => {
-  const { type, data } = e.data||{};
-  if(type==='ready'){ ready=true; code.disabled=false; println('[py] ready'); }
-  if(type==='stdout'){ println(data); }
-  if(type==='stderr'){ println('[err] '+data); }
-  if(type==='spawn'){
-    const {id,kind,pos,color} = data;
-    api.spawnShape(id,kind,pos,color);
-    socket.emit('shape:spawn',{id,kind,pos,color});
-  }
+let worker, ready = false;
+
+function bootWorker(mode='cdn'){
+  if (worker) { worker.terminate(); worker = null; }
+  ready = false;
+  runBtn.disabled = true;
+  code.disabled = true;
+  statusEl.textContent = 'loading…';
+
+  const url = mode === 'local' ? './py_worker_local.js' : './py_worker_cdn.js';
+  worker = new Worker(url, { type: 'module' });
+  worker.onerror = e => println('[worker error] ' + (e.message ?? '(no message)'));
+  worker.onmessageerror = () => println('[worker msg error]');
+  worker.onmessage = (e) => {
+    const { type, data } = e.data || {};
+    if (type === 'ready'){ ready = true; runBtn.disabled = false; statusEl.textContent = 'ready'; }
+    if (type === 'stdout'){ println(data); }
+    if (type === 'stderr'){ println('[err] ' + data); }
+    if (type === 'hello'){ code.disabled = false; code.focus(); println('[info] interpreter online.'); }
+  };
+}
+
+bootWorker(workerMode.value);
+workerMode.addEventListener('change', ()=> bootWorker(workerMode.value));
+
+function runSnippet(snippet){
+  if (!ready) { println('Pyodide not ready'); return; }
+  worker.postMessage({ type:'exec', code: snippet });
+  if (echo.checked) socket.emit('code:run', { snippet });
+}
+
+runBtn.onclick = () => {
+  const s = code.value.trim();
+  if (s) runSnippet(s);
+  code.value='';
 };
-socket.on('shape:spawn', payload=>api.spawnShape(payload.id,payload.kind,payload.pos,payload.color));
-
-function run(snippet){ if(ready) worker.postMessage({type:'exec',code:snippet}); else println('Pyodide not ready'); }
-code.addEventListener('keydown', e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); const s=code.value.trim(); if(s) run(s); code.value=''; } });
+code.addEventListener('keydown', (e)=>{
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    runBtn.click();
+  }
+});
