@@ -113,7 +113,7 @@ document.getElementById('btnTest').onclick = () => {
 };
 
 // ---------- Pyodide console ----------
-const worker = new Worker('./py_worker.js', { type: 'module' });
+const worker = new Worker('./py_worker.js'); // classic worker so importScripts works
 let consoleReady = false;
 
 worker.onmessage = (e) => {
