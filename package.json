@@ -2,7 +2,7 @@
   "name": "gps-multiplayer-v2",
   "version": "2.0.1",
   "private": true,
-  "description": "GPS multiplayer with clean modules, iOS motion/orientation permission, and diagnostics",
+  "description": "GPS multiplayer with Babylon.js + Socket.IO",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",

@@ -10,10 +10,9 @@
       #renderCanvas { flex: 1 1 auto; width:100%; touch-action:none; display:block; }
       #hud { flex:0 0 auto; padding:8px 12px; border-top:1px solid #1f2937; background:#0d1117; display:grid; grid-template-columns: 1fr auto; gap:12px; align-items:center; }
       #status { font-size:12px; line-height:1.3; opacity:.9; }
-      #buttons { display:inline-flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+      #buttons { display:inline-flex; gap:8px; }
       button { background:#111827; color:#e6edf3; border:1px solid #374151; border-radius:10px; padding:8px 10px; font-size:12px; cursor:pointer; }
       button:active { transform: translateY(1px); }
-      button[disabled] { opacity:.5; cursor:not-allowed; }
       a { color:#93c5fd; }
     </style>
   </head>
@@ -28,7 +27,7 @@
       </div>
     </div>
 
-    <!-- Main module (imports the rest) -->
+    <!-- Modules -->
     <script type="module" src="./main.js"></script>
   </body>
 </html>
