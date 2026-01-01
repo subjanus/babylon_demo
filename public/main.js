@@ -265,6 +265,38 @@ function createDrawerUI() {
 
 ui = createDrawerUI();
 
+function isPointerOverDrawerUI(evt) {
+  // Simple screen-space hit test to avoid breaking selection.
+  // Ignores clicks on the ☰ toggle (top-left) and the drawer pane when open (top-right).
+  if (!evt) return false;
+
+  const w = engine.getRenderWidth(true);
+
+  const x = evt.clientX;
+  const y = evt.clientY;
+
+  // Toggle button area (top-left)
+  const toggleLeft = 10, toggleTop = 10, toggleSize = 44;
+  const overToggle = (x >= toggleLeft && x <= toggleLeft + toggleSize && y >= toggleTop && y <= toggleTop + toggleSize);
+
+  // Drawer area (top-right) when visible
+  let overDrawer = false;
+  try {
+    const drawer = ui?.drawer;
+    if (drawer && drawer.isVisible) {
+      const drawerWidth = 340;
+      const drawerHeight = 420;
+      const margin = 10;
+      const drawerLeft = w - (drawerWidth + margin);
+      const drawerTop = margin;
+      overDrawer = (x >= drawerLeft && x <= w - margin && y >= drawerTop && y <= drawerTop + drawerHeight);
+    }
+  } catch (_) {}
+
+  return overToggle || overDrawer;
+}
+
+
 function setUIStatus(s) {
   if (statusEl) statusEl.textContent = s;
   if (uiStatusText) uiStatusText.text = s;
@@ -398,10 +430,10 @@ scene.onPointerObservable.add((pi) => {
   if (pi.type !== BABYLON.PointerEventTypes.POINTERDOWN) return;
 
 
-  // Ignore taps on the in-canvas drawer UI
-  if (ui && ui.adt && ui.adt._lastControlOver) return;
-
   // Ignore clicks on HUD/buttons
+  // Ignore taps on the in-canvas drawer UI regions
+  if (isPointerOverDrawerUI(pi.event)) return;
+
   const target = pi.event && pi.event.target;
   if (target && target.id && (target.id.startsWith("btn") || target.id === "hud" || target.id === "buttons" || target.id === "status" || target.id === "selection")) {
     return;
