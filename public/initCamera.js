@@ -1,6 +1,5 @@
 // public/initCamera.js
-// Camera initialization with corrected near clipping plane
-// Fixes geometry clipping when using device orientation / gyro
+// Camera with corrected near clipping plane
 
 export function initCamera(scene, canvas) {
   const camera = new BABYLON.DeviceOrientationCamera(
@@ -9,10 +8,9 @@ export function initCamera(scene, canvas) {
     scene
   );
 
-  // 🔧 CRITICAL FIX: prevent near-plane slicing during extreme pitch
+  // Prevent near-plane clipping during extreme pitch
   camera.minZ = 0.01;
 
   camera.attachControl(canvas, true);
-
   return camera;
 }
