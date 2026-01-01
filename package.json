@@ -1,8 +1,8 @@
 {
   "name": "gps-multiplayer-v2",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
-  "description": "Rebuilt GPS multiplayer with clean modules and optional diagnostics",
+  "description": "GPS multiplayer with clean modules, iOS motion/orientation permission, and diagnostics",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",

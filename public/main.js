@@ -14,7 +14,8 @@ const state = {
   myLocalX: 0,
   myLocalZ: 0,
   myLocalTargetX: 0,
-  myLocalTargetZ: 0
+  myLocalTargetZ: 0,
+  gyroEnabled: false
 };
 
 const SELF_SMOOTH_SPEED = 5;
@@ -31,8 +32,9 @@ function lerp(from, to, t) {
   return from + (to - from) * t;
 }
 
-const canvas = document.getElementById("renderCanvas");
-const hud    = document.getElementById("status");
+const canvas   = document.getElementById("renderCanvas");
+const hud      = document.getElementById("status");
+const btnPerm  = document.getElementById("btnPerm");
 const btnColor = document.getElementById("btnColor");
 const btnDrop  = document.getElementById("btnDrop");
 
@@ -78,6 +80,7 @@ function updateHUD(clientsCount = null) {
   if (clientsCount != null) state.clientCount = clientsCount;
   if (state.clientCount != null) parts.push(`Clients: ${state.clientCount}`);
   parts.push(`Cubes: ${state.blocks.size}`);
+  parts.push(state.gyroEnabled ? "Gyro: ON" : "Gyro: off");
   hud.textContent = parts.join("  |  ");
 }
 
@@ -228,8 +231,23 @@ function stepFrame(deltaMs) {
   state.others.forEach(rec => updateOtherRender(rec, deltaSec));
 }
 
-// --- Permissions for iOS gyro ---
-canvas.addEventListener("click", async () => { await requestDevicePermissions(); }, { once: true });
+// --- Motion/orientation permissions (iOS) ---
+async function enableMotionFromGesture() {
+  const granted = await requestDevicePermissions();
+  state.gyroEnabled = !!granted;
+  btnPerm.disabled = granted;
+  updateHUD();
+  if (!granted) {
+    hud.textContent = "Motion/orientation not granted. Try Safari settings or tap again.";
+  }
+}
+btnPerm.addEventListener("click", enableMotionFromGesture, { passive: true });
+
+// Also allow a single canvas tap to request (nice on mobile)
+canvas.addEventListener("click", async () => {
+  if (btnPerm.disabled) return;
+  await enableMotionFromGesture();
+}, { once: true });
 
 // --- Buttons ---
 btnColor.addEventListener("click", () => socket.emit("toggleColor"));
@@ -320,7 +338,7 @@ socket.on("createBlock", block => upsertBlock(block));
 
 socket.on("colorUpdate", ({ id, color }) => {
   if (id === socket.id) { setMyColor(color); return; }
-  const rec = ensureOther(id, color);
+  ensureOther(id, color);
 });
 
 // render loop
