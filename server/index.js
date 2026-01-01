@@ -1,45 +1,66 @@
-import express from "express";
-import http from "http";
-import cors from "cors";
-import { Server } from "socket.io";
+const express = require('express');
+const http    = require('http');
+const { Server } = require('socket.io');
 
 const app = express();
-app.use(cors());
 const server = http.createServer(app);
+const io = new Server(server);
 
-const io = new Server(server, { cors: { origin: "*" } });
+// Fun color rotation for players
+const COLORS = ["#00A3FF", "#FFCC00", "#34D399", "#F472B6", "#F59E0B", "#22D3EE", "#A78BFA"];
+let nextColorIdx = 0;
 
-const players = new Map();
-const ORIGIN = { lat0: 35.9940, lon0: -78.8986 };
+// Authoritative in-memory state
+const clients = {};          // id -> { lat, lon, color }
+const droppedBlocks = [];    // [{ id, lat, lon, color }]
+let nextBlockId = 1;
 
-function latLonToXZ(lat, lon) {
-  const R = 6371000;
-  const lat0 = ORIGIN.lat0 * Math.PI / 180;
-  const dLat = (lat - ORIGIN.lat0) * Math.PI / 180;
-  const dLon = (lon - ORIGIN.lon0) * Math.PI / 180;
-  return {
-    x: R * dLon * Math.cos(lat0),
-    z: R * dLat
-  };
-}
+io.on('connection', (socket) => {
+  console.log('client connected', socket.id);
 
-io.on("connection", socket => {
-  const id = socket.id;
-  players.set(id, { id, ...latLonToXZ(ORIGIN.lat0, ORIGIN.lon0) });
+  // Assign an initial color and register client
+  const color = COLORS[nextColorIdx++ % COLORS.length];
+  clients[socket.id] = { lat: null, lon: null, color };
 
-  socket.emit("hello", { id, origin: ORIGIN });
+  // Send snapshot to newcomer
+  socket.emit('initialState', { clients, droppedBlocks, myColor: color });
+  io.emit('clientListUpdate', clients);
 
-  socket.on("gps", data => {
-    const p = players.get(id);
-    if (!p) return;
-    Object.assign(p, latLonToXZ(data.lat, data.lon));
+  socket.on('gpsUpdate', ({ lat, lon }) => {
+    if (!clients[socket.id]) return;
+    clients[socket.id].lat = lat;
+    clients[socket.id].lon = lon;
+    socket.broadcast.emit('updateClientPosition', { id: socket.id, lat, lon });
+    io.emit('clientListUpdate', clients);
   });
 
-  socket.on("disconnect", () => players.delete(id));
+  socket.on('dropCube', ({ lat, lon }) => {
+    if (typeof lat !== 'number' || typeof lon !== 'number') return;
+    const color = clients[socket.id]?.color || null;
+    const block = { id: nextBlockId++, lat, lon, color };
+    droppedBlocks.push(block);
+    io.emit('createBlock', block);
+  });
+
+  socket.on('toggleColor', () => {
+    const current = clients[socket.id]?.color;
+    if (!current) return;
+    let idx = COLORS.indexOf(current);
+    if (idx < 0) idx = 0;
+    const next = COLORS[(idx + 1) % COLORS.length];
+    clients[socket.id].color = next;
+    io.emit('colorUpdate', { id: socket.id, color: next });
+  });
+
+  socket.on('disconnect', () => {
+    console.log('client disconnected', socket.id);
+    delete clients[socket.id];
+    io.emit('removeClient', socket.id);
+    io.emit('clientListUpdate', clients);
+  });
 });
 
-setInterval(() => {
-  io.emit("state", { players: [...players.values()] });
-}, 100);
+app.use(express.static('public'));
 
-server.listen(process.env.PORT || 10000);
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
