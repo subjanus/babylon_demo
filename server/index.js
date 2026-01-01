@@ -1,5 +1,6 @@
 // server/index.js
-// OPTION 1: Authoritative world-state broadcast on every mutation
+// Option 1 (authoritative) — FIX: keep authoritative state,
+// but do NOT change coordinate semantics (still lat/lon).
 
 const express = require("express");
 const http = require("http");
@@ -29,6 +30,7 @@ io.on("connection", (socket) => {
   const color = COLORS[nextColor++ % COLORS.length];
   clients[socket.id] = { lat: null, lon: null, color };
 
+  // Send full authoritative snapshot
   socket.emit("worldState", { clients, droppedBlocks });
 
   socket.on("gpsUpdate", ({ lat, lon }) => {
