@@ -537,7 +537,6 @@ function reconcileWorld(state) {
     if (isNumber(c.lat) && isNumber(c.lon)) {
       const { x, z } = latLonToXZ(c.lat, c.lon);
       cube.position.set(x, PLAYER_CUBE_Y, z);
-      // metadata for selection/distance
       cube.metadata = { ...(cube.metadata || {}), lat: c.lat, lon: c.lon, kind: "playerCube", socketId: id };
     }
 
@@ -567,26 +566,26 @@ function reconcileWorld(state) {
     }
   }
 
-  
   // Follow mode: translate the world so the local player's cube stays centered under the camera.
   if (followMe && socket.id && playerCubes[socket.id]) {
     const me = playerCubes[socket.id];
-    // NOTE: me.position is in worldRoot-local space; shifting worldRoot recenters everything.
     worldRoot.position.x = -me.position.x;
     worldRoot.position.z = -me.position.z;
   }
 
-// Dropped cubes
+  // Dropped cubes (create/update)
+  const presentBlocks = new Set();
   for (const b of (state.droppedBlocks || [])) {
-    if (!isNumber(b.lat) || !isNumber(b.lon)) continue;
+    if (!isNumber(b.id) || !isNumber(b.lat) || !isNumber(b.lon)) continue;
+    presentBlocks.add(String(b.id));
+
     const cube = ensureDroppedCube(b.id, b.color);
     const { x, z } = latLonToXZ(b.lat, b.lon);
     cube.position.set(x, DROPPED_CUBE_Y, z);
     cube.metadata = { ...(cube.metadata || {}), lat: b.lat, lon: b.lon, kind: "droppedCube", blockId: b.id };
+  }
 
-
-  // Remove deleted dropped cubes (e.g., after someone deletes one)
-  const presentBlocks = new Set((state.droppedBlocks || []).map(b => String(b.id)));
+  // Remove deleted dropped cubes (works even when droppedBlocks is empty)
   for (const id of Object.keys(droppedCubes)) {
     if (!presentBlocks.has(String(id))) {
       if (selectedKind === "droppedCube" && String(selectedId) === String(id)) {
@@ -604,9 +603,19 @@ function reconcileWorld(state) {
 
   // Update selection HUD (distance may change as GPS updates)
   updateSelectionHUD();
-
-  }
 }
+
+
+socket.on("deleteResult", (r) => {
+  // Quick feedback so you can tell if the server accepted the delete
+  if (!r || typeof r !== "object") return;
+  if (r.ok) {
+    statusEl.textContent = `Connected (${shortId(socket.id)}) | Deleted cube #${r.blockId}`;
+  } else {
+    const reason = r.reason || "rejected";
+    statusEl.textContent = `Connected (${shortId(socket.id)}) | Delete failed: ${reason}`;
+  }
+});
 
 socket.on("connect", () => {
   statusEl.textContent = "Connected";

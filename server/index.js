@@ -138,23 +138,37 @@ io.on("connection", (socket) => {
   
   socket.on("deleteCube", ({ blockId }) => {
     const idNum = Number(blockId);
-    if (!Number.isFinite(idNum)) return;
+    if (!Number.isFinite(idNum)) {
+      socket.emit("deleteResult", { ok: false, blockId, reason: "bad_id" });
+      return;
+    }
 
     const idx = droppedBlocks.findIndex(b => b.id === idNum);
-    if (idx === -1) return;
+    if (idx === -1) {
+      socket.emit("deleteResult", { ok: false, blockId: idNum, reason: "not_found" });
+      return;
+    }
 
-    // Basic server-side guard: require recent-ish client position and proximity.
+    // Server-side guard: require client position and proximity.
     const me = clients[socket.id];
     const block = droppedBlocks[idx];
 
-    if (!me || !isNumber(me.lat) || !isNumber(me.lon)) return;
+    if (!me || !isNumber(me.lat) || !isNumber(me.lon)) {
+      socket.emit("deleteResult", { ok: false, blockId: idNum, reason: "no_gps" });
+      return;
+    }
 
     const d = approxDistMeters(me.lat, me.lon, block.lat, block.lon);
-    if (d > MAX_DELETE_M) return;
+    if (d > MAX_DELETE_M) {
+      socket.emit("deleteResult", { ok: false, blockId: idNum, reason: "too_far", distM: d, maxM: MAX_DELETE_M });
+      return;
+    }
 
     droppedBlocks.splice(idx, 1);
 
     pushTelemetry({ t: Date.now(), id: socket.id, kind: "deleteCube", blockId: idNum, distM: d });
+
+    socket.emit("deleteResult", { ok: true, blockId: idNum, distM: d });
 
     emitWorldState();
   });
