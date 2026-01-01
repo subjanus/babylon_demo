@@ -56,10 +56,18 @@ app.get("/debug/state", (_req, res) => {
 
 app.get("/debug/telemetry", (req, res) => {
   const limit = Math.max(1, Math.min(5000, parseInt(req.query.limit || "500", 10)));
+  const filterId = (req.query.id || "").trim();
+
+  const filtered = filterId
+    ? telemetry.filter(e => e.id === filterId)
+    : telemetry;
+
   res.json({
     count: telemetry.length,
-    returned: Math.min(limit, telemetry.length),
-    telemetry: telemetry.slice(-limit)
+    filteredCount: filtered.length,
+    returned: Math.min(limit, filtered.length),
+    filterId: filterId || null,
+    telemetry: filtered.slice(-limit)
   });
 });
 

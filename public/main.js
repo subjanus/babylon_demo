@@ -16,6 +16,34 @@ const btnNorth = document.getElementById("btnNorth");
 const btnColor = document.getElementById("btnColor");
 const btnDrop  = document.getElementById("btnDrop");
 
+// Follow mode: keep local player centered under the camera
+let followMe = true;
+
+function ensureFollowButton() {
+  // If HTML doesn't have it yet, create it (keeps this patch compatible with older index.html)
+  const hudButtons = document.getElementById("buttons");
+  if (!hudButtons) return;
+
+  let btn = document.getElementById("btnFollow");
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.id = "btnFollow";
+    btn.textContent = "Follow: On";
+    hudButtons.insertBefore(btn, hudButtons.firstChild);
+  }
+
+  btn.addEventListener("click", () => {
+    followMe = !followMe;
+    btn.textContent = followMe ? "Follow: On" : "Follow: Off";
+    emitTelemetry("ui", { action: "followMe", followMe });
+    if (!followMe) {
+      worldRoot.position.x = 0;
+      worldRoot.position.z = 0;
+    }
+  });
+}
+
+
 // --- Babylon ---
 const { engine, scene } = initScene(canvas);
 const camera = initCamera(scene, canvas);
@@ -72,6 +100,8 @@ const remoteSpheres = {}; // socketId -> sphere mesh (remote only)
 const droppedCubes = {};  // blockId -> cube mesh
 
 // --- Helpers ---
+function shortId(id){ return (id||'').slice(-4); }
+
 function isNumber(n) {
   return typeof n === "number" && Number.isFinite(n);
 }
@@ -200,6 +230,7 @@ function emitTelemetry(kind, extra = {}) {
 }
 
 // --- UI wiring ---
+ensureFollowButton();
 if (btnPerm) {
   btnPerm.addEventListener("click", async () => {
     const ok = await requestDevicePermissions();
@@ -309,7 +340,7 @@ function reconcileWorld(state) {
   const clientIds = Object.keys(state.clients || {});
   const blockCount = (state.droppedBlocks || []).length;
 
-  statusEl.textContent = `Connected | Users: ${clientIds.length} | Cubes: ${blockCount}`;
+  statusEl.textContent = `Connected (${shortId(socket.id)}) | Users: ${clientIds.length} | Cubes: ${blockCount}`;
 
   // Players
   for (const [id, c] of Object.entries(state.clients || {})) {
@@ -345,7 +376,16 @@ function reconcileWorld(state) {
     }
   }
 
-  // Dropped cubes
+  
+  // Follow mode: translate the world so the local player's cube stays centered under the camera.
+  if (followMe && socket.id && playerCubes[socket.id]) {
+    const me = playerCubes[socket.id];
+    // NOTE: me.position is in worldRoot-local space; shifting worldRoot recenters everything.
+    worldRoot.position.x = -me.position.x;
+    worldRoot.position.z = -me.position.z;
+  }
+
+// Dropped cubes
   for (const b of (state.droppedBlocks || [])) {
     if (!isNumber(b.lat) || !isNumber(b.lon)) continue;
     const cube = ensureDroppedCube(b.id, b.color);
