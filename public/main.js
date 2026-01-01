@@ -1,47 +1,181 @@
+// public/main.js
+// Recommended fix package:
+// 1) Stable shared origin from server (worldOrigin) so everyone agrees on coordinates.
+// 2) Smooth + deadband local GPS so the world doesn't "swing" from jitter.
+// 3) Optional heading stabilization (Lock North) to neutralize compass drift if desired.
+// 4) Remote users get spheres; local user does not.
+
 import { initScene } from "./initScene.js";
 import { initCamera } from "./initCamera.js";
 import { requestDevicePermissions } from "./requestPermissions.js";
 import { initBox } from "./initBox.js";
-import { latLonToLocal, toFix5 } from "./geo.js";
 
-const state = {
-  refLat: null,
-  refLon: null,
-
-  myLat: null,
-  myLon: null,
-
-  others: new Map(), // id -> { mesh, color, lat, lon, localX, localZ, justSpawned }
-  blocks: new Map(), // id -> { id, lat, lon, localX, localZ, color, mesh, justSpawned }
-
-  myColor: "#00A3FF",
-  clientCount: null,
-
-  myLocalX: 0,
-  myLocalZ: 0,
-  myLocalTargetX: 0,
-  myLocalTargetZ: 0,
-};
-
-const SELF_SMOOTH_SPEED = 5;
-const ENTITY_SMOOTH_SPEED = 6;
-const BLOCK_SMOOTH_SPEED = 10;
-
-function clamp01(v) {
-  if (v <= 0) return 0;
-  if (v >= 1) return 1;
-  return v;
-}
-function lerp(from, to, t) {
-  return from + (to - from) * t;
-}
-
+// --- UI ---
 const canvas = document.getElementById("renderCanvas");
-const hud = document.getElementById("status");
+const statusEl = document.getElementById("status");
+const btnPerm  = document.getElementById("btnPerm");
+const btnNorth = document.getElementById("btnNorth");
 const btnColor = document.getElementById("btnColor");
-const btnDrop = document.getElementById("btnDrop");
-const btnPerm = document.getElementById("btnPerm");
+const btnDrop  = document.getElementById("btnDrop");
 
+// --- Babylon ---
+const { engine, scene } = initScene(canvas);
+const camera = initCamera(scene, canvas);
+
+// A root node for world objects (lets us optionally stabilize heading by rotating the world).
+const worldRoot = new BABYLON.TransformNode("worldRoot", scene);
+
+// Expose minimal debug handles (optional)
+window.__scene = scene;
+
+// --- Socket ---
+const socket = io({
+  path: "/socket.io",
+  transports: ["websocket", "polling"],
+  reconnection: true,
+  reconnectionAttempts: 10,
+  reconnectionDelay: 800
+});
+
+// --- Constants ---
+const PLAYER_CUBE_Y  = -5;   // below the camera but still reasonable
+const DROPPED_CUBE_Y = -1;   // "ground-ish"
+const REMOTE_SPHERE_Y_OFFSET = 10;
+
+const GPS_ALPHA = 0.12;      // smoothing strength (0..1). Higher = more responsive, more jitter.
+const DEAD_BAND_M = 1.8;     // ignore smaller movements (meters)
+const SEND_MIN_MS = 350;     // throttle outgoing gps updates
+
+const YAW_ALPHA = 0.08;      // heading smoothing if Lock North is enabled
+
+// --- State ---
+let worldOrigin = null;      // {lat, lon} from server
+let metersPerDegLon = null;
+
+let rawLat = null, rawLon = null;
+let filtLat = null, filtLon = null;
+let lastSentLat = null, lastSentLon = null;
+let lastSentAt = 0;
+
+// Lock North
+let lockNorth = false;
+let yawZero = 0;
+let yawSmoothed = 0;
+
+// Entities
+const playerCubes = {};  // socketId -> cube mesh (including local)
+const remoteSpheres = {}; // socketId -> sphere mesh (remote only)
+const droppedCubes = {}; // blockId -> cube mesh
+
+// --- Helpers ---
+function isNumber(n) {
+  return typeof n === "number" && Number.isFinite(n);
+}
+
+function setupProjection(origin) {
+  if (!origin) return;
+  const lat0 = origin.lat;
+  worldOrigin = origin;
+  metersPerDegLon = 111320 * Math.cos(lat0 * Math.PI / 180);
+}
+
+function latLonToXZ(lat, lon) {
+  // Fallback: if origin missing, treat first value as origin
+  if (!worldOrigin) setupProjection({ lat, lon });
+
+  const dLat = (lat - worldOrigin.lat);
+  const dLon = (lon - worldOrigin.lon);
+  const x = dLon * metersPerDegLon;
+  const z = dLat * 111320;
+  return { x, z };
+}
+
+function distMeters(lat1, lon1, lat2, lon2) {
+  if (!worldOrigin) return Infinity;
+  const a = latLonToXZ(lat1, lon1);
+  const b = latLonToXZ(lat2, lon2);
+  const dx = a.x - b.x;
+  const dz = a.z - b.z;
+  return Math.hypot(dx, dz);
+}
+
+function ensurePlayerCube(id, color) {
+  if (!playerCubes[id]) {
+    const cube = initBox(scene, color);
+    cube.name = `playerCube_${id}`;
+    cube.parent = worldRoot;
+    playerCubes[id] = cube;
+  }
+  return playerCubes[id];
+}
+
+function ensureRemoteSphere(id, color) {
+  if (remoteSpheres[id]) return remoteSpheres[id];
+
+  const sphere = BABYLON.MeshBuilder.CreateSphere(
+    `remoteSphere_${id}`,
+    { diameter: 2, segments: 16 },
+    scene
+  );
+
+  const mat = new BABYLON.StandardMaterial(`remoteSphereMat_${id}`, scene);
+  mat.diffuseColor = BABYLON.Color3.FromHexString(color || "#FFCC00");
+  mat.specularColor = BABYLON.Color3.Black();
+  sphere.material = mat;
+
+  sphere.parent = worldRoot;
+  sphere.isPickable = false;
+
+  remoteSpheres[id] = sphere;
+  return sphere;
+}
+
+function ensureDroppedCube(blockId, color) {
+  if (!droppedCubes[blockId]) {
+    const cube = initBox(scene, color);
+    cube.name = `droppedCube_${blockId}`;
+    cube.parent = worldRoot;
+    droppedCubes[blockId] = cube;
+  }
+  return droppedCubes[blockId];
+}
+
+// Extract yaw from camera quaternion (radians)
+function getCameraYawRad() {
+  const q = camera.rotationQuaternion;
+  if (!q) return camera.rotation?.y || 0;
+
+  // Convert quaternion to yaw (Y axis) using a common formula.
+  const ysqr = q.y * q.y;
+
+  // yaw (Y axis rotation)
+  const t3 = +2.0 * (q.w * q.y + q.x * q.z);
+  const t4 = +1.0 - 2.0 * (ysqr + q.z * q.z);
+  return Math.atan2(t3, t4);
+}
+
+function normalizeAngleRad(a) {
+  while (a > Math.PI) a -= 2 * Math.PI;
+  while (a < -Math.PI) a += 2 * Math.PI;
+  return a;
+}
+
+function applyHeadingStabilization() {
+  if (!lockNorth) {
+    worldRoot.rotation.y = 0;
+    return;
+  }
+
+  const yaw = getCameraYawRad();
+  // Smooth yaw
+  const delta = normalizeAngleRad(yaw - yawSmoothed);
+  yawSmoothed = normalizeAngleRad(yawSmoothed + delta * YAW_ALPHA);
+
+  // Keep world stable relative to the heading at the moment we locked it.
+  worldRoot.rotation.y = -(yawSmoothed - yawZero);
+}
+
+// --- UI wiring ---
 if (btnPerm) {
   btnPerm.addEventListener("click", async () => {
     const ok = await requestDevicePermissions();
@@ -49,332 +183,153 @@ if (btnPerm) {
   });
 }
 
-// IMPORTANT: do NOT force websocket-only; allow polling fallback for hosts that block WS.
-const socket = io({
-  path: "/socket.io",
-  transports: ["websocket", "polling"],
-  reconnection: true,
-  reconnectionAttempts: 10,
-  reconnectionDelay: 800,
-});
+if (btnNorth) {
+  btnNorth.addEventListener("click", () => {
+    lockNorth = !lockNorth;
+    // Capture current smoothed yaw as "north zero" at lock time
+    yawSmoothed = getCameraYawRad();
+    yawZero = yawSmoothed;
 
-socket.on("connect", () => {
-  console.log("socket connected", socket.id);
-  hud.textContent = `Connected as ${socket.id}`;
-});
-
-socket.on("connect_error", (err) => {
-  console.error("connect_error", err);
-  hud.textContent = `Socket error: ${err.message || err}`;
-});
-
-socket.on("disconnect", (reason) => {
-  console.warn("socket disconnected", reason);
-  hud.textContent = `Disconnected: ${reason}`;
-});
-
-// Scene, camera, player cube
-const { engine, scene } = initScene(canvas);
-initCamera(scene, canvas);
-const me = initBox(scene, state.myColor);
-me.isVisible = false;
-me.isPickable = false;
-
-// --- HUD ---
-function updateHUD(clientsCount = null) {
-  const lat = state.myLat != null ? state.myLat.toFixed(5) : "…";
-  const lon = state.myLon != null ? state.myLon.toFixed(5) : "…";
-  const parts = [
-    `You: ${lat}, ${lon}`,
-    state.refLat != null ? `Ref: ${state.refLat.toFixed(5)}, ${state.refLon.toFixed(5)}` : "Ref: …",
-  ];
-  if (clientsCount != null) state.clientCount = clientsCount;
-  if (state.clientCount != null) parts.push(`Clients: ${state.clientCount}`);
-  parts.push(`Cubes: ${state.blocks.size}`);
-  hud.textContent = parts.join("  |  ");
-}
-
-// --- Coordinate frame (everything rendered relative to "you") ---
-function offsetToPlayerFrame(x = 0, z = 0) {
-  return {
-    x: x - (state.myLocalX ?? 0),
-    z: z - (state.myLocalZ ?? 0),
-  };
-}
-
-// --- Blocks (dropped cubes) ---
-function ensureBlockMesh(rec) {
-  if (!rec) return;
-  if (!rec.mesh) {
-    const block = BABYLON.MeshBuilder.CreateBox("block", { size: 0.8 }, scene);
-    const mat = new BABYLON.StandardMaterial("blockMat", scene);
-    block.material = mat;
-    block.position = new BABYLON.Vector3(0, 0.4, 0);
-    block.isPickable = false;
-    block.isVisible = false;
-    rec.mesh = block;
-    rec.justSpawned = true;
-  }
-  const hex = rec.color || "#9C62E0";
-  rec.mesh.material.diffuseColor = BABYLON.Color3.FromHexString(hex);
-}
-
-function updateBlockLocal(rec) {
-  if (!rec || rec.lat == null || rec.lon == null || state.refLat == null) return false;
-  if (!Number.isFinite(rec.lat) || !Number.isFinite(rec.lon)) return false;
-  const { x, z } = latLonToLocal(rec.lat, rec.lon, state.refLat, state.refLon);
-  const first = rec.localX == null && rec.localZ == null;
-  rec.localX = x;
-  rec.localZ = z;
-  if (first) rec.justSpawned = true;
-  return true;
-}
-
-function upsertBlock({ id, lat, lon, color }) {
-  if (id == null) return;
-  let rec = state.blocks.get(id);
-  if (!rec) {
-    rec = { id, lat: null, lon: null, localX: null, localZ: null, color: color || null, mesh: null, justSpawned: true };
-    state.blocks.set(id, rec);
-  }
-  if (typeof lat === "number") rec.lat = lat;
-  if (typeof lon === "number") rec.lon = lon;
-  const nextColor = color || rec.color || "#9C62E0";
-  rec.color = nextColor;
-
-  if (state.refLat != null) updateBlockLocal(rec);
-  ensureBlockMesh(rec);
-  updateHUD();
-}
-
-// --- Other players (remote spheres) ---
-function ensureOther(id, color) {
-  let rec = state.others.get(id);
-  if (!rec) {
-    const mesh = BABYLON.MeshBuilder.CreateSphere(`p_${id}`, { diameter: 1.6 }, scene);
-    const mat = new BABYLON.StandardMaterial(`p_${id}_mat`, scene);
-    mesh.material = mat;
-    mesh.position = new BABYLON.Vector3(0, 0.8, 0);
-    mesh.isPickable = false;
-    mesh.isVisible = false;
-    rec = { mesh, color: null, lat: null, lon: null, localX: null, localZ: null, justSpawned: true };
-    state.others.set(id, rec);
-  }
-  const nextColor = color ?? rec.color ?? "#FFCC00";
-  if (nextColor !== rec.color) {
-    rec.color = nextColor;
-    rec.mesh.material.diffuseColor = BABYLON.Color3.FromHexString(nextColor);
-  }
-  return rec;
-}
-
-function removeOther(id) {
-  const rec = state.others.get(id);
-  if (rec) {
-    rec.mesh.dispose();
-    state.others.delete(id);
-  }
-}
-
-function setMyColor(hex) {
-  state.myColor = hex;
-  if (me && me.material) {
-    me.material.diffuseColor = BABYLON.Color3.FromHexString(hex);
-  }
-}
-
-function updateOtherLocal(rec) {
-  if (!rec || rec.lat == null || rec.lon == null || state.refLat == null) return false;
-  if (!Number.isFinite(rec.lat) || !Number.isFinite(rec.lon)) return false;
-  const { x, z } = latLonToLocal(rec.lat, rec.lon, state.refLat, state.refLon);
-  const first = rec.localX == null && rec.localZ == null;
-  rec.localX = x;
-  rec.localZ = z;
-  if (first) rec.justSpawned = true;
-  return true;
-}
-
-function realizePendingEntities() {
-  state.blocks.forEach((rec) => {
-    ensureBlockMesh(rec);
-    updateBlockLocal(rec);
-  });
-  state.others.forEach((rec, id) => {
-    const ensured = ensureOther(id, rec.color);
-    updateOtherLocal(ensured);
+    btnNorth.textContent = lockNorth ? "Lock North: On" : "Lock North: Off";
   });
 }
 
-// --- Render smoothing ---
-function applySmoothing(rec, targetX, targetZ, height, t) {
-  if (!rec.mesh) return;
-  if (rec.justSpawned || !Number.isFinite(rec.mesh.position.x) || !Number.isFinite(rec.mesh.position.z)) {
-    rec.mesh.position.x = targetX;
-    rec.mesh.position.z = targetZ;
-    rec.justSpawned = false;
-  } else {
-    rec.mesh.position.x = lerp(rec.mesh.position.x, targetX, t);
-    rec.mesh.position.z = lerp(rec.mesh.position.z, targetZ, t);
-  }
-  rec.mesh.position.y = height;
-  rec.mesh.isVisible = true;
+if (btnColor) {
+  btnColor.addEventListener("click", () => socket.emit("toggleColor"));
 }
 
-function updateBlockRender(rec, deltaSec) {
-  if (!rec || !rec.mesh) return;
-  if ((rec.localX == null || rec.localZ == null) && !updateBlockLocal(rec)) return;
-  const rel = offsetToPlayerFrame(rec.localX, rec.localZ);
-  const t = clamp01(deltaSec * BLOCK_SMOOTH_SPEED);
-  applySmoothing(rec, rel.x, rel.z, 0.4, t);
-}
-
-function updateOtherRender(rec, deltaSec) {
-  if (!rec || !rec.mesh) return;
-  if ((rec.localX == null || rec.localZ == null) && !updateOtherLocal(rec)) return;
-  const rel = offsetToPlayerFrame(rec.localX, rec.localZ);
-  const t = clamp01(deltaSec * ENTITY_SMOOTH_SPEED);
-  applySmoothing(rec, rel.x, rel.z, 0.8, t);
-}
-
-function stepFrame(deltaMs) {
-  const deltaSec = clamp01(Math.max(deltaMs, 0) / 1000);
-  const selfT = clamp01(deltaSec * SELF_SMOOTH_SPEED);
-  state.myLocalX = lerp(state.myLocalX, state.myLocalTargetX, selfT);
-  state.myLocalZ = lerp(state.myLocalZ, state.myLocalTargetZ, selfT);
-
-  state.blocks.forEach((rec) => updateBlockRender(rec, deltaSec));
-  state.others.forEach((rec) => updateOtherRender(rec, deltaSec));
-}
-
-// --- Permissions for iOS gyro ---
-canvas.addEventListener("click", async () => {
-  await requestDevicePermissions();
-}, { once: true });
-
-// --- Buttons ---
-if (btnColor) btnColor.addEventListener("click", () => socket.emit("toggleColor"));
 if (btnDrop) {
   btnDrop.addEventListener("click", () => {
-    if (state.myLat == null || state.myLon == null) return;
-    socket.emit("dropCube", { lat: state.myLat, lon: state.myLon });
+    // Use filtered position if available, else raw.
+    const lat = isNumber(filtLat) ? filtLat : rawLat;
+    const lon = isNumber(filtLon) ? filtLon : rawLon;
+    if (!isNumber(lat) || !isNumber(lon)) return;
+    socket.emit("dropCube", { lat, lon });
   });
 }
 
-// --- Geolocation watch ---
-function startGps() {
-  if (!("geolocation" in navigator)) { hud.textContent = "No geolocation available"; return; }
-  navigator.geolocation.watchPosition(pos => {
-    const { latitude, longitude } = pos.coords;
-    const lat = toFix5(latitude);
-    const lon = toFix5(longitude);
+// --- GPS ---
+function onGeo(lat, lon) {
+  rawLat = lat;
+  rawLon = lon;
 
-    const firstFix = state.refLat == null;
-    if (firstFix) {
-      state.refLat = lat;
-      state.refLon = lon;
-    }
-
-    if (state.refLat != null) {
-      const { x, z } = latLonToLocal(lat, lon, state.refLat, state.refLon);
-      state.myLocalTargetX = x;
-      state.myLocalTargetZ = z;
-      if (firstFix) {
-        state.myLocalX = x;
-        state.myLocalZ = z;
-        state.myLocalTargetX = x;
-        state.myLocalTargetZ = z;
-        realizePendingEntities();
-      }
-    }
-
-    // Emit only on change
-    if (lat !== state.myLat || lon !== state.myLon) {
-      state.myLat = lat; state.myLon = lon;
-      socket.emit("gpsUpdate", { lat, lon });
-      updateHUD();
-    }
-
-  }, err => {
-    console.error("GPS error", err);
-    hud.textContent = `GPS error: ${err.message}`;
-  }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 });
-}
-startGps();
-
-// --- Authoritative reconciliation (Option 1) ---
-// This snapshot arrives on connect and after every meaningful server-side mutation.
-function reconcileWorldState({ clients, droppedBlocks }) {
-  if (!clients || !droppedBlocks) return;
-
-  // My color (authoritative)
-  if (socket.id && clients[socket.id] && clients[socket.id].color) {
-    setMyColor(clients[socket.id].color);
+  if (filtLat === null || filtLon === null) {
+    filtLat = lat;
+    filtLon = lon;
+  } else {
+    filtLat = filtLat + (lat - filtLat) * GPS_ALPHA;
+    filtLon = filtLon + (lon - filtLon) * GPS_ALPHA;
   }
 
-  // Others
-  const ids = new Set(Object.keys(clients));
-  [...state.others.keys()].forEach((id) => {
-    if (!ids.has(id) || id === socket.id) removeOther(id);
-  });
+  const now = Date.now();
+  if (lastSentLat === null || lastSentLon === null) {
+    lastSentLat = filtLat;
+    lastSentLon = filtLon;
+    lastSentAt = now;
+    socket.emit("gpsUpdate", { lat: filtLat, lon: filtLon });
+    return;
+  }
 
-  Object.entries(clients).forEach(([id, c]) => {
-    if (id === socket.id) return;
-    const rec = ensureOther(id, c.color);
-    if (typeof c.lat === "number") rec.lat = c.lat;
-    if (typeof c.lon === "number") rec.lon = c.lon;
-    if (state.refLat != null) updateOtherLocal(rec);
-  });
+  if (now - lastSentAt < SEND_MIN_MS) return;
 
-  // Blocks
-  droppedBlocks.forEach((b) => upsertBlock(b));
+  // deadband in meters
+  const moved = distMeters(lastSentLat, lastSentLon, filtLat, filtLon);
+  if (moved < DEAD_BAND_M) return;
 
-  updateHUD(Object.keys(clients).length);
+  lastSentLat = filtLat;
+  lastSentLon = filtLon;
+  lastSentAt = now;
+  socket.emit("gpsUpdate", { lat: filtLat, lon: filtLon });
 }
 
-// --- Socket events (incremental + authoritative snapshot) ---
-socket.on("worldState", reconcileWorldState);
+// Start watchPosition immediately (permissions may be needed on iOS; that's okay — it will fail quietly)
+if ("geolocation" in navigator) {
+  navigator.geolocation.watchPosition(
+    (pos) => {
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+      if (isNumber(lat) && isNumber(lon)) onGeo(lat, lon);
+    },
+    () => {},
+    {
+      enableHighAccuracy: true,
+      maximumAge: 1000,
+      timeout: 20000
+    }
+  );
+}
 
-socket.on("initialState", ({ clients, droppedBlocks, myColor }) => {
-  if (myColor) setMyColor(myColor);
-  reconcileWorldState({ clients, droppedBlocks });
+// --- World reconciliation (authoritative snapshots) ---
+function reconcileWorld(state) {
+  if (state.worldOrigin && (!worldOrigin || state.worldOrigin.lat !== worldOrigin.lat || state.worldOrigin.lon !== worldOrigin.lon)) {
+    setupProjection(state.worldOrigin);
+  }
+
+  const clientIds = Object.keys(state.clients || {});
+  const blockCount = (state.droppedBlocks || []).length;
+
+  // HUD
+  statusEl.textContent = `Connected | Users: ${clientIds.length} | Cubes: ${blockCount}`;
+
+  // Players
+  for (const [id, c] of Object.entries(state.clients || {})) {
+    const cube = ensurePlayerCube(id, c.color);
+
+    if (isNumber(c.lat) && isNumber(c.lon)) {
+      const { x, z } = latLonToXZ(c.lat, c.lon);
+      cube.position.set(x, PLAYER_CUBE_Y, z);
+    }
+
+    // Remote sphere (everyone except local socket.id)
+    if (id !== socket.id) {
+      const sphere = ensureRemoteSphere(id, c.color);
+      sphere.position.x = cube.position.x;
+      sphere.position.z = cube.position.z;
+      sphere.position.y = camera.position.y + REMOTE_SPHERE_Y_OFFSET;
+    } else {
+      // No local sphere
+      if (remoteSpheres[id]) {
+        remoteSpheres[id].dispose();
+        delete remoteSpheres[id];
+      }
+    }
+  }
+
+  // Remove disconnected players
+  for (const id of Object.keys(playerCubes)) {
+    if (!state.clients || !state.clients[id]) {
+      playerCubes[id].dispose();
+      delete playerCubes[id];
+
+      if (remoteSpheres[id]) {
+        remoteSpheres[id].dispose();
+        delete remoteSpheres[id];
+      }
+    }
+  }
+
+  // Dropped cubes
+  for (const b of (state.droppedBlocks || [])) {
+    if (!isNumber(b.lat) || !isNumber(b.lon)) continue;
+    const cube = ensureDroppedCube(b.id, b.color);
+
+    const { x, z } = latLonToXZ(b.lat, b.lon);
+    cube.position.set(x, DROPPED_CUBE_Y, z);
+  }
+}
+
+socket.on("connect", () => {
+  statusEl.textContent = "Connected";
 });
 
-socket.on("clientListUpdate", (clients) => {
-  // Keep this for responsiveness; worldState will also correct any drift.
-  const ids = new Set(Object.keys(clients));
-  [...state.others.keys()].forEach((id) => {
-    if (!ids.has(id) || id === socket.id) removeOther(id);
-  });
-  Object.entries(clients).forEach(([id, c]) => {
-    if (id === socket.id) return;
-    const rec = ensureOther(id, c.color);
-    if (typeof c.lat === "number") rec.lat = c.lat;
-    if (typeof c.lon === "number") rec.lon = c.lon;
-    if (state.refLat != null) updateOtherLocal(rec);
-  });
-  updateHUD(Object.keys(clients).length);
+socket.on("worldState", (state) => {
+  reconcileWorld(state);
 });
 
-socket.on("updateClientPosition", ({ id, lat, lon }) => {
-  if (id === socket.id) return;
-  const rec = ensureOther(id);
-  if (typeof lat === "number") rec.lat = lat;
-  if (typeof lon === "number") rec.lon = lon;
-  if (state.refLat != null) updateOtherLocal(rec);
-});
-
-socket.on("removeClient", (id) => removeOther(id));
-socket.on("createBlock", (block) => upsertBlock(block));
-
-socket.on("colorUpdate", ({ id, color }) => {
-  if (id === socket.id) { setMyColor(color); return; }
-  ensureOther(id, color);
-});
-
-// render loop
+// --- Render loop ---
 engine.runRenderLoop(() => {
-  const deltaMs = engine.getDeltaTime();
-  stepFrame(deltaMs);
+  applyHeadingStabilization();
   scene.render();
 });
+
 window.addEventListener("resize", () => engine.resize());

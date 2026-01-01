@@ -1,3 +1,8 @@
+// server/index.js
+// Recommended fix: Authoritative world snapshots + stable shared world origin.
+// - Server picks worldOrigin once (first valid GPS fix) and never changes it.
+// - Server emits worldState after every mutation (gpsUpdate, dropCube, connect, disconnect).
+
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -5,58 +10,71 @@ const { Server } = require("socket.io");
 const app = express();
 const server = http.createServer(app);
 
-// Same-origin by default. (If you host client separately, add explicit CORS here.)
-const io = new Server(server, {
-  path: "/socket.io",
-});
+// Same-origin by default. If you host client separately, configure CORS here.
+const io = new Server(server, { path: "/socket.io" });
+
+app.use(express.static("public"));
 
 const COLORS = ["#00A3FF", "#FFCC00", "#34D399", "#F472B6", "#F59E0B", "#22D3EE", "#A78BFA"];
 let nextColorIdx = 0;
 
-const clients = {};       // id -> { lat, lon, color }
-const droppedBlocks = []; // [{ id, lat, lon, color }]
+const clients = {};        // id -> { lat, lon, color }
+const droppedBlocks = [];  // [{ id, lat, lon, color }]
 let nextBlockId = 1;
 
+// Stable shared origin for all clients (set once)
+let worldOrigin = null;    // { lat, lon }
+
 function emitWorldState() {
-  // Send the authoritative snapshot. This is the "option 1" safety net:
-  // even if a one-off event is missed, the next snapshot repairs state.
-  io.emit("worldState", { clients, droppedBlocks });
+  io.emit("worldState", {
+    clients,
+    droppedBlocks,
+    worldOrigin
+  });
+}
+
+function isNumber(n) {
+  return typeof n === "number" && Number.isFinite(n);
 }
 
 io.on("connection", (socket) => {
-  console.log("client connected", socket.id);
-
   const color = COLORS[nextColorIdx++ % COLORS.length];
   clients[socket.id] = { lat: null, lon: null, color };
 
-  // Personalized init (includes myColor), plus a full snapshot.
-  socket.emit("initialState", { clients, droppedBlocks, myColor: color });
-  socket.emit("worldState", { clients, droppedBlocks });
-
-  io.emit("clientListUpdate", clients);
-  emitWorldState();
+  // Send full snapshot immediately
+  socket.emit("worldState", { clients, droppedBlocks, worldOrigin });
 
   socket.on("gpsUpdate", ({ lat, lon }) => {
     if (!clients[socket.id]) return;
+    if (!isNumber(lat) || !isNumber(lon)) return;
+
     clients[socket.id].lat = lat;
     clients[socket.id].lon = lon;
 
-    // Incremental + snapshot
-    socket.broadcast.emit("updateClientPosition", { id: socket.id, lat, lon });
-    io.emit("clientListUpdate", clients);
+    // Set world origin once (first valid fix from anyone)
+    if (!worldOrigin) {
+      worldOrigin = { lat, lon };
+    }
+
     emitWorldState();
   });
 
   socket.on("dropCube", ({ lat, lon }) => {
-    if (typeof lat !== "number" || typeof lon !== "number") return;
-    const c = clients[socket.id];
-    const blockColor = c?.color || null;
+    if (!isNumber(lat) || !isNumber(lon)) return;
 
-    const block = { id: nextBlockId++, lat, lon, color: blockColor };
+    // If origin isn't set yet, set it from the first drop too (fallback)
+    if (!worldOrigin) {
+      worldOrigin = { lat, lon };
+    }
+
+    const block = {
+      id: nextBlockId++,
+      lat,
+      lon,
+      color: clients[socket.id]?.color || "#ffffff"
+    };
+
     droppedBlocks.push(block);
-
-    // Incremental + snapshot
-    io.emit("createBlock", block);
     emitWorldState();
   });
 
@@ -64,28 +82,16 @@ io.on("connection", (socket) => {
     const current = clients[socket.id]?.color;
     if (!current) return;
 
-    let idx = COLORS.indexOf(current);
-    if (idx < 0) idx = 0;
-    const next = COLORS[(idx + 1) % COLORS.length];
-    clients[socket.id].color = next;
-
-    // Incremental + snapshot
-    io.emit("colorUpdate", { id: socket.id, color: next });
-    io.emit("clientListUpdate", clients);
+    const idx = Math.max(0, COLORS.indexOf(current));
+    clients[socket.id].color = COLORS[(idx + 1) % COLORS.length];
     emitWorldState();
   });
 
   socket.on("disconnect", () => {
-    console.log("client disconnected", socket.id);
     delete clients[socket.id];
-
-    io.emit("removeClient", socket.id);
-    io.emit("clientListUpdate", clients);
     emitWorldState();
   });
 });
-
-app.use(express.static("public"));
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
