@@ -1,15 +1,18 @@
-export function initCamera(scene, canvas) {
-  // Prefer device orientation camera when available, but keep a sensible fallback.
-  let camera = null;
+// public/initCamera.js
+// Camera initialization with corrected near clipping plane
+// Fixes geometry clipping when using device orientation / gyro
 
-  if (BABYLON.DeviceOrientationCamera) {
-    camera = new BABYLON.DeviceOrientationCamera("cam", new BABYLON.Vector3(0, 1.8, 0), scene);
-    camera.angularSensibility = 5;
-  } else {
-    camera = new BABYLON.UniversalCamera("cam", new BABYLON.Vector3(0, 1.8, -6), scene);
-    camera.setTarget(new BABYLON.Vector3(0, 1.2, 0));
-  }
+export function initCamera(scene, canvas) {
+  const camera = new BABYLON.DeviceOrientationCamera(
+    "camera",
+    new BABYLON.Vector3(0, 1.6, 0),
+    scene
+  );
+
+  // 🔧 CRITICAL FIX: prevent near-plane slicing during extreme pitch
+  camera.minZ = 0.01;
 
   camera.attachControl(canvas, true);
+
   return camera;
 }
