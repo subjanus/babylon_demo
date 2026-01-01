@@ -1,13 +1,16 @@
-// Local tangent plane (swapped axes to match current scene orientation).
-// X = east (m), Z = south (m) relative to a reference lat/lon.
-export function latLonToLocal(lat, lon, refLat, refLon) {
-  const φ = toRad(refLat);
-  const mPerDegLat = 111132.92 - 559.82 * Math.cos(2*φ) + 1.175 * Math.cos(4*φ);
-  const mPerDegLon = 111412.84 * Math.cos(φ) - 93.5 * Math.cos(3*φ);
-  const dx = (lon - refLon) * mPerDegLon;
-  const dz = (refLat - lat) * mPerDegLat;
-  return { x: dx, z: dz };
+// public/geo.js
+// GPS update logic shared by local + remote players
+
+export function updatePlayerPosition(player, x, z) {
+  if (!player) return;
+  player.position.x = x;
+  player.position.z = z;
+  player.position.y = -130; // always below user
 }
 
-export const toRad = d => d * Math.PI / 180;
-export const toFix5 = n => Number(n.toFixed(5));
+export function updateRemoteSphere(sphere, cube, scene) {
+  if (!sphere || !cube || !scene || !scene.activeCamera) return;
+  sphere.position.x = cube.position.x;
+  sphere.position.z = cube.position.z;
+  sphere.position.y = scene.activeCamera.position.y + 10;
+}
