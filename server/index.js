@@ -23,6 +23,12 @@ const clients = {};        // id -> { lat, lon, color }
 const droppedBlocks = [];  // [{ id, lat, lon, color }]
 let nextBlockId = 1;
 
+// Server-authoritative counters (extendable for mini-games)
+const actionCounters = {
+  deletedCubes: 0
+};
+
+
 // Stable shared origin for all clients (set once)
 let worldOrigin = null;    // { lat, lon }
 
@@ -41,7 +47,8 @@ function emitWorldState() {
   io.emit("worldState", {
     clients,
     droppedBlocks,
-    worldOrigin
+    worldOrigin,
+    actionCounters
   });
 }
 
@@ -65,7 +72,7 @@ function approxDistMeters(lat1, lon1, lat2, lon2) {
 }
 // Debug endpoints (view from Mac browser)
 app.get("/debug/state", (_req, res) => {
-  res.json({ clients, droppedBlocks, worldOrigin });
+  res.json({ clients, droppedBlocks, worldOrigin, actionCounters });
 });
 
 app.get("/debug/telemetry", (req, res) => {
@@ -160,15 +167,19 @@ io.on("connection", (socket) => {
 
     const d = approxDistMeters(me.lat, me.lon, block.lat, block.lon);
     if (d > MAX_DELETE_M) {
-      socket.emit("deleteResult", { ok: false, blockId: idNum, reason: "too_far", distM: d, maxM: MAX_DELETE_M });
+      socket.emit("deleteResult", { ok: false, blockId: idNum, reason: "too_far", distM: d, maxM: MAX_DELETE_M, actionCounters });
       return;
     }
 
     droppedBlocks.splice(idx, 1);
 
+    actionCounters.deletedCubes += 1;
+
+
+
     pushTelemetry({ t: Date.now(), id: socket.id, kind: "deleteCube", blockId: idNum, distM: d });
 
-    socket.emit("deleteResult", { ok: true, blockId: idNum, distM: d });
+    socket.emit("deleteResult", { ok: true, blockId: idNum, distM: d, actionCounters });
 
     emitWorldState();
   });

@@ -87,6 +87,204 @@ const camera = initCamera(scene, canvas);
 // A root node for world objects (lets us optionally stabilize heading by rotating the world).
 const worldRoot = new BABYLON.TransformNode("worldRoot", scene);
 
+// --- In-canvas Drawer UI (Babylon GUI) ---
+let ui = null;
+let uiStatusText = null;
+let uiCountsText = null;
+let uiSelectedText = null;
+let uiDeleteBtn = null;
+
+function createDrawerUI() {
+  if (!BABYLON.GUI) {
+    console.warn("Babylon GUI not loaded; falling back to HTML HUD.");
+    return null;
+  }
+
+  const adt = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("drawerUI", true, scene);
+
+  // Toggle button (hamburger)
+  const toggle = BABYLON.GUI.Button.CreateSimpleButton("btnDrawerToggle", "☰");
+  toggle.width = "44px";
+  toggle.height = "44px";
+  toggle.color = "#e6edf3";
+  toggle.background = "#111827";
+  toggle.thickness = 1;
+  toggle.cornerRadius = 12;
+  toggle.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+  toggle.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
+  toggle.left = "10px";
+  toggle.top = "10px";
+  toggle.isPointerBlocker = true;
+  adt.addControl(toggle);
+
+  // Drawer pane
+  const drawer = new BABYLON.GUI.Rectangle("drawerPane");
+  drawer.width = "340px";
+  drawer.height = "440px";
+  drawer.cornerRadius = 16;
+  drawer.thickness = 1;
+  drawer.color = "#374151";
+  drawer.background = "#0d1117";
+  drawer.alpha = 0.94;
+  drawer.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
+  drawer.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
+  drawer.top = "10px";
+  drawer.left = "-10px";
+  drawer.isVisible = false;
+  drawer.isPointerBlocker = true;
+  adt.addControl(drawer);
+
+  const root = new BABYLON.GUI.StackPanel("drawerStack");
+  root.paddingTop = "10px";
+  root.paddingLeft = "12px";
+  root.paddingRight = "12px";
+  root.paddingBottom = "10px";
+  root.isPointerBlocker = true;
+  drawer.addControl(root);
+
+  const headerRow = new BABYLON.GUI.StackPanel("hdrRow");
+  headerRow.isVertical = false;
+  headerRow.height = "34px";
+  headerRow.isPointerBlocker = true;
+  root.addControl(headerRow);
+
+  const title = new BABYLON.GUI.TextBlock("drawerTitle", "Field Kit");
+  title.color = "#e6edf3";
+  title.fontSize = 18;
+  title.height = "34px";
+  title.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+  title.resizeToFit = true;
+  headerRow.addControl(title);
+
+  const close = BABYLON.GUI.Button.CreateSimpleButton("btnDrawerClose", "×");
+  close.width = "34px";
+  close.height = "34px";
+  close.color = "#e6edf3";
+  close.background = "#111827";
+  close.thickness = 1;
+  close.cornerRadius = 10;
+  close.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
+  close.isPointerBlocker = true;
+  headerRow.addControl(close);
+
+  uiStatusText = new BABYLON.GUI.TextBlock("uiStatus", "Connecting…");
+  uiStatusText.color = "#e6edf3";
+  uiStatusText.fontSize = 12;
+  uiStatusText.height = "34px";
+  uiStatusText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+  uiStatusText.textWrapping = true;
+  root.addControl(uiStatusText);
+
+  uiCountsText = new BABYLON.GUI.TextBlock("uiCounts", "Users: 0 | Cubes: 0 | Deleted: 0");
+  uiCountsText.color = "#cbd5e1";
+  uiCountsText.fontSize = 12;
+  uiCountsText.height = "28px";
+  uiCountsText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+  root.addControl(uiCountsText);
+
+  uiSelectedText = new BABYLON.GUI.TextBlock("uiSelected", "Selected: none");
+  uiSelectedText.color = "#cbd5e1";
+  uiSelectedText.fontSize = 12;
+  uiSelectedText.height = "40px";
+  uiSelectedText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+  uiSelectedText.textWrapping = true;
+  root.addControl(uiSelectedText);
+
+  const sep = new BABYLON.GUI.Rectangle("sep");
+  sep.height = "1px";
+  sep.thickness = 0;
+  sep.background = "#1f2937";
+  root.addControl(sep);
+
+  function mkButton(id, label, onClick) {
+    const b = BABYLON.GUI.Button.CreateSimpleButton(id, label);
+    b.width = "100%";
+    b.height = "40px";
+    b.color = "#e6edf3";
+    b.background = "#111827";
+    b.thickness = 1;
+    b.cornerRadius = 12;
+    b.paddingTop = "6px";
+    b.isPointerBlocker = true;
+    b.onPointerUpObservable.add(() => onClick(b));
+    root.addControl(b);
+    return b;
+  }
+
+  const bFollow = mkButton("uiFollow", "Follow: On", () => {
+    followMe = !followMe;
+    bFollow.textBlock.text = followMe ? "Follow: On" : "Follow: Off";
+    emitTelemetry("ui", { action: "followMe", followMe });
+    if (!followMe) {
+      worldRoot.position.x = 0;
+      worldRoot.position.z = 0;
+    }
+  });
+
+  const bNorth = mkButton("uiNorth", "Lock North: Off", () => {
+    lockNorth = !lockNorth;
+    yawSmoothed = getCameraYawRad();
+    yawZero = yawSmoothed;
+    bNorth.textBlock.text = lockNorth ? "Lock North: On" : "Lock North: Off";
+    emitTelemetry("ui", { action: "lockNorth", lockNorth });
+  });
+
+  const bPerm = mkButton("uiPerm", "Enable Motion", async () => {
+    const ok = await requestDevicePermissions();
+    bPerm.textBlock.text = ok ? "Motion Enabled" : "Motion Blocked";
+    emitTelemetry("ui", { action: "perm", ok });
+  });
+
+  mkButton("uiColor", "Toggle Color", () => {
+    socket.emit("toggleColor");
+    emitTelemetry("ui", { action: "toggleColor" });
+  });
+
+  mkButton("uiDrop", "Drop Cube", () => {
+    const lat = isNumber(filtLat) ? filtLat : rawLat;
+    const lon = isNumber(filtLon) ? filtLon : rawLon;
+    if (!isNumber(lat) || !isNumber(lon)) return;
+    socket.emit("dropCube", { lat, lon });
+    emitTelemetry("drop", { lat, lon });
+  });
+
+  uiDeleteBtn = mkButton("uiDelete", "Delete Selected", () => {
+    attemptDeleteSelected();
+  });
+  uiDeleteBtn.isEnabled = false;
+  uiDeleteBtn.alpha = 0.5;
+
+  function setOpen(open) {
+    drawer.isVisible = open;
+  }
+  toggle.onPointerUpObservable.add(() => setOpen(!drawer.isVisible));
+  close.onPointerUpObservable.add(() => setOpen(false));
+
+  return { adt, drawer, toggle };
+}
+
+ui = createDrawerUI();
+
+function setUIStatus(s) {
+  if (statusEl) statusEl.textContent = s;
+  if (uiStatusText) uiStatusText.text = s;
+}
+
+function setUICounts(users, cubes, deleted) {
+  if (uiCountsText) uiCountsText.text = `Users: ${users} | Cubes: ${cubes} | Deleted: ${deleted}`;
+}
+
+function setUISelected(s, canDelete) {
+  if (selectionEl) selectionEl.textContent = s;
+  if (uiSelectedText) uiSelectedText.text = s;
+
+  const enabled = !!canDelete;
+  if (btnDelete) btnDelete.disabled = !enabled;
+  if (uiDeleteBtn) {
+    uiDeleteBtn.isEnabled = enabled;
+    uiDeleteBtn.alpha = enabled ? 1.0 : 0.5;
+  }
+}
 
 // --- Selection / interaction ---
 const SELECT_DELETE_RANGE_M = 8; // meters; must be within this to delete a dropped cube
@@ -116,8 +314,7 @@ function clearSelection() {
   selectedLon = null;
   selectedKind = null;
   selectedId = null;
-  if (selectionEl) selectionEl.textContent = "Selected: none";
-  if (btnDelete) btnDelete.disabled = true;
+  setUISelected("Selected: none", false);
 }
 
 function setSelection(mesh) {
@@ -158,8 +355,7 @@ function updateSelectionHUD() {
   if (!selectionEl) return;
 
   if (!selectedMesh) {
-    selectionEl.textContent = "Selected: none";
-    if (btnDelete) btnDelete.disabled = true;
+    setUISelected("Selected: none", false);
     return;
   }
 
@@ -176,11 +372,7 @@ function updateSelectionHUD() {
     }
   }
 
-  selectionEl.textContent = `Selected: ${selectedLabel} | ${distTxt}`;
-
-  if (btnDelete) {
-    btnDelete.disabled = !canDelete;
-  }
+  setUISelected(`Selected: ${selectedLabel} | ${distTxt}`, canDelete);
 }
 
 function attemptDeleteSelected() {
@@ -204,6 +396,10 @@ function attemptDeleteSelected() {
 // Pointer selection (tap / click on canvas)
 scene.onPointerObservable.add((pi) => {
   if (pi.type !== BABYLON.PointerEventTypes.POINTERDOWN) return;
+
+
+  // Ignore taps on the in-canvas drawer UI
+  if (ui && ui.adt && ui.adt._lastControlOver) return;
 
   // Ignore clicks on HUD/buttons
   const target = pi.event && pi.event.target;
@@ -520,7 +716,9 @@ if ("geolocation" in navigator) {
 }
 
 // --- World reconciliation (authoritative snapshots) ---
+let lastWorldState = null;
 function reconcileWorld(state) {
+  lastWorldState = state;
   if (state.worldOrigin && (!worldOrigin || state.worldOrigin.lat !== worldOrigin.lat || state.worldOrigin.lon !== worldOrigin.lon)) {
     setupProjection(state.worldOrigin);
   }
@@ -528,7 +726,8 @@ function reconcileWorld(state) {
   const clientIds = Object.keys(state.clients || {});
   const blockCount = (state.droppedBlocks || []).length;
 
-  statusEl.textContent = `Connected (${shortId(socket.id)}) | Users: ${clientIds.length} | Cubes: ${blockCount}`;
+  setUIStatus(`Connected (${shortId(socket.id)})`);
+  setUICounts(clientIds.length, blockCount, (state.actionCounters && state.actionCounters.deletedCubes) || 0);
 
   // Players
   for (const [id, c] of Object.entries(state.clients || {})) {
@@ -610,15 +809,21 @@ socket.on("deleteResult", (r) => {
   // Quick feedback so you can tell if the server accepted the delete
   if (!r || typeof r !== "object") return;
   if (r.ok) {
-    statusEl.textContent = `Connected (${shortId(socket.id)}) | Deleted cube #${r.blockId}`;
+    setUIStatus(`Connected (${shortId(socket.id)}) | Deleted cube #${r.blockId}`);
+    if (r.actionCounters && lastWorldState) {
+      setUICounts(Object.keys(lastWorldState.clients || {}).length, (lastWorldState.droppedBlocks || []).length, r.actionCounters.deletedCubes || 0);
+    }
   } else {
     const reason = r.reason || "rejected";
-    statusEl.textContent = `Connected (${shortId(socket.id)}) | Delete failed: ${reason}`;
+    setUIStatus(`Connected (${shortId(socket.id)}) | Delete failed: ${reason}`);
+    if (r.actionCounters && lastWorldState) {
+      setUICounts(Object.keys(lastWorldState.clients || {}).length, (lastWorldState.droppedBlocks || []).length, r.actionCounters.deletedCubes || 0);
+    }
   }
 });
 
 socket.on("connect", () => {
-  statusEl.textContent = "Connected";
+  setUIStatus("Connected");
   emitTelemetry("connect", { id: socket.id });
 });
 
