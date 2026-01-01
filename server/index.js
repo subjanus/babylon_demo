@@ -1,7 +1,10 @@
 // server/index.js
-// Recommended fix: Authoritative world snapshots + stable shared world origin.
-// - Server picks worldOrigin once (first valid GPS fix) and never changes it.
-// - Server emits worldState after every mutation (gpsUpdate, dropCube, connect, disconnect).
+// Telemetry logging patch:
+// - Accepts lightweight client telemetry over Socket.IO ("telemetry" event)
+// - Stores a rolling in-memory buffer
+// - Exposes debug endpoints:
+//     GET /debug/telemetry  (optionally ?limit=500)
+//     GET /debug/state
 
 const express = require("express");
 const http = require("http");
@@ -9,8 +12,6 @@ const { Server } = require("socket.io");
 
 const app = express();
 const server = http.createServer(app);
-
-// Same-origin by default. If you host client separately, configure CORS here.
 const io = new Server(server, { path: "/socket.io" });
 
 app.use(express.static("public"));
@@ -25,6 +26,17 @@ let nextBlockId = 1;
 // Stable shared origin for all clients (set once)
 let worldOrigin = null;    // { lat, lon }
 
+// ---- Telemetry (rolling buffer) ----
+const TELEMETRY_MAX = 5000;
+const telemetry = []; // [{t, id, kind, ...payload}]
+
+function pushTelemetry(entry) {
+  telemetry.push(entry);
+  if (telemetry.length > TELEMETRY_MAX) {
+    telemetry.splice(0, telemetry.length - TELEMETRY_MAX);
+  }
+}
+
 function emitWorldState() {
   io.emit("worldState", {
     clients,
@@ -37,12 +49,29 @@ function isNumber(n) {
   return typeof n === "number" && Number.isFinite(n);
 }
 
+// Debug endpoints (view from Mac browser)
+app.get("/debug/state", (_req, res) => {
+  res.json({ clients, droppedBlocks, worldOrigin });
+});
+
+app.get("/debug/telemetry", (req, res) => {
+  const limit = Math.max(1, Math.min(5000, parseInt(req.query.limit || "500", 10)));
+  res.json({
+    count: telemetry.length,
+    returned: Math.min(limit, telemetry.length),
+    telemetry: telemetry.slice(-limit)
+  });
+});
+
 io.on("connection", (socket) => {
   const color = COLORS[nextColorIdx++ % COLORS.length];
   clients[socket.id] = { lat: null, lon: null, color };
 
   // Send full snapshot immediately
   socket.emit("worldState", { clients, droppedBlocks, worldOrigin });
+
+  // Record connect
+  pushTelemetry({ t: Date.now(), id: socket.id, kind: "connect", color });
 
   socket.on("gpsUpdate", ({ lat, lon }) => {
     if (!clients[socket.id]) return;
@@ -54,6 +83,7 @@ io.on("connection", (socket) => {
     // Set world origin once (first valid fix from anyone)
     if (!worldOrigin) {
       worldOrigin = { lat, lon };
+      pushTelemetry({ t: Date.now(), id: socket.id, kind: "worldOriginSet", lat, lon });
     }
 
     emitWorldState();
@@ -65,6 +95,7 @@ io.on("connection", (socket) => {
     // If origin isn't set yet, set it from the first drop too (fallback)
     if (!worldOrigin) {
       worldOrigin = { lat, lon };
+      pushTelemetry({ t: Date.now(), id: socket.id, kind: "worldOriginSet", lat, lon });
     }
 
     const block = {
@@ -75,6 +106,10 @@ io.on("connection", (socket) => {
     };
 
     droppedBlocks.push(block);
+
+    // Record drop (authoritative)
+    pushTelemetry({ t: Date.now(), id: socket.id, kind: "dropCube", blockId: block.id, lat, lon, color: block.color });
+
     emitWorldState();
   });
 
@@ -83,12 +118,34 @@ io.on("connection", (socket) => {
     if (!current) return;
 
     const idx = Math.max(0, COLORS.indexOf(current));
-    clients[socket.id].color = COLORS[(idx + 1) % COLORS.length];
+    const next = COLORS[(idx + 1) % COLORS.length];
+    clients[socket.id].color = next;
+
+    pushTelemetry({ t: Date.now(), id: socket.id, kind: "toggleColor", color: next });
+
     emitWorldState();
+  });
+
+  // Client telemetry (best-effort, does not affect game logic)
+  socket.on("telemetry", (payload) => {
+    if (!payload || typeof payload !== "object") return;
+
+    // prevent huge spam payloads
+    let json = "";
+    try { json = JSON.stringify(payload); } catch (_) { return; }
+    if (json.length > 8000) return;
+
+    pushTelemetry({
+      t: Date.now(),
+      id: socket.id,
+      kind: payload.kind || "telemetry",
+      payload
+    });
   });
 
   socket.on("disconnect", () => {
     delete clients[socket.id];
+    pushTelemetry({ t: Date.now(), id: socket.id, kind: "disconnect" });
     emitWorldState();
   });
 });

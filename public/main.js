@@ -1,9 +1,7 @@
 // public/main.js
-// Recommended fix package:
-// 1) Stable shared origin from server (worldOrigin) so everyone agrees on coordinates.
-// 2) Smooth + deadband local GPS so the world doesn't "swing" from jitter.
-// 3) Optional heading stabilization (Lock North) to neutralize compass drift if desired.
-// 4) Remote users get spheres; local user does not.
+// Telemetry logging patch:
+// - Emits telemetry on GPS samples + drops so you can inspect from a Mac via /debug/telemetry
+// - Does NOT change gameplay logic
 
 import { initScene } from "./initScene.js";
 import { initCamera } from "./initCamera.js";
@@ -38,7 +36,7 @@ const socket = io({
 });
 
 // --- Constants ---
-const PLAYER_CUBE_Y  = -5;   // below the camera but still reasonable
+const PLAYER_CUBE_Y  = -5;   // below camera
 const DROPPED_CUBE_Y = -1;   // "ground-ish"
 const REMOTE_SPHERE_Y_OFFSET = 10;
 
@@ -47,6 +45,9 @@ const DEAD_BAND_M = 1.8;     // ignore smaller movements (meters)
 const SEND_MIN_MS = 350;     // throttle outgoing gps updates
 
 const YAW_ALPHA = 0.08;      // heading smoothing if Lock North is enabled
+
+// Telemetry throttling
+const TELEMETRY_MIN_MS = 500;
 
 // --- State ---
 let worldOrigin = null;      // {lat, lon} from server
@@ -62,10 +63,13 @@ let lockNorth = false;
 let yawZero = 0;
 let yawSmoothed = 0;
 
+// Telemetry timing
+let lastTelemAt = 0;
+
 // Entities
-const playerCubes = {};  // socketId -> cube mesh (including local)
+const playerCubes = {};   // socketId -> cube mesh (including local)
 const remoteSpheres = {}; // socketId -> sphere mesh (remote only)
-const droppedCubes = {}; // blockId -> cube mesh
+const droppedCubes = {};  // blockId -> cube mesh
 
 // --- Helpers ---
 function isNumber(n) {
@@ -94,9 +98,7 @@ function distMeters(lat1, lon1, lat2, lon2) {
   if (!worldOrigin) return Infinity;
   const a = latLonToXZ(lat1, lon1);
   const b = latLonToXZ(lat2, lon2);
-  const dx = a.x - b.x;
-  const dz = a.z - b.z;
-  return Math.hypot(dx, dz);
+  return Math.hypot(a.x - b.x, a.z - b.z);
 }
 
 function ensurePlayerCube(id, color) {
@@ -145,12 +147,9 @@ function getCameraYawRad() {
   const q = camera.rotationQuaternion;
   if (!q) return camera.rotation?.y || 0;
 
-  // Convert quaternion to yaw (Y axis) using a common formula.
   const ysqr = q.y * q.y;
-
-  // yaw (Y axis rotation)
-  const t3 = +2.0 * (q.w * q.y + q.x * q.z);
-  const t4 = +1.0 - 2.0 * (ysqr + q.z * q.z);
+  const t3 = 2.0 * (q.w * q.y + q.x * q.z);
+  const t4 = 1.0 - 2.0 * (ysqr + q.z * q.z);
   return Math.atan2(t3, t4);
 }
 
@@ -167,12 +166,37 @@ function applyHeadingStabilization() {
   }
 
   const yaw = getCameraYawRad();
-  // Smooth yaw
   const delta = normalizeAngleRad(yaw - yawSmoothed);
   yawSmoothed = normalizeAngleRad(yawSmoothed + delta * YAW_ALPHA);
 
-  // Keep world stable relative to the heading at the moment we locked it.
   worldRoot.rotation.y = -(yawSmoothed - yawZero);
+}
+
+// --- Telemetry emit (best effort) ---
+function emitTelemetry(kind, extra = {}) {
+  const now = Date.now();
+  if (kind === "gps" && now - lastTelemAt < TELEMETRY_MIN_MS) return;
+  if (kind === "state" && now - lastTelemAt < TELEMETRY_MIN_MS) return;
+
+  lastTelemAt = now;
+
+  let proj = null;
+  try {
+    if (isNumber(filtLat) && isNumber(filtLon)) proj = latLonToXZ(filtLat, filtLon);
+  } catch (_) {}
+
+  const payload = {
+    kind,
+    lockNorth,
+    worldOrigin,
+    raw: isNumber(rawLat) && isNumber(rawLon) ? { lat: rawLat, lon: rawLon } : null,
+    filt: isNumber(filtLat) && isNumber(filtLon) ? { lat: filtLat, lon: filtLon } : null,
+    proj: proj ? { x: proj.x, z: proj.z } : null,
+    yaw: getCameraYawRad(),
+    extra
+  };
+
+  socket.emit("telemetry", payload);
 }
 
 // --- UI wiring ---
@@ -180,36 +204,41 @@ if (btnPerm) {
   btnPerm.addEventListener("click", async () => {
     const ok = await requestDevicePermissions();
     btnPerm.textContent = ok ? "Motion Enabled" : "Motion Blocked";
+    emitTelemetry("ui", { action: "perm", ok });
   });
 }
 
 if (btnNorth) {
   btnNorth.addEventListener("click", () => {
     lockNorth = !lockNorth;
-    // Capture current smoothed yaw as "north zero" at lock time
     yawSmoothed = getCameraYawRad();
     yawZero = yawSmoothed;
 
     btnNorth.textContent = lockNorth ? "Lock North: On" : "Lock North: Off";
+    emitTelemetry("ui", { action: "lockNorth", lockNorth });
   });
 }
 
 if (btnColor) {
-  btnColor.addEventListener("click", () => socket.emit("toggleColor"));
+  btnColor.addEventListener("click", () => {
+    socket.emit("toggleColor");
+    emitTelemetry("ui", { action: "toggleColor" });
+  });
 }
 
 if (btnDrop) {
   btnDrop.addEventListener("click", () => {
-    // Use filtered position if available, else raw.
     const lat = isNumber(filtLat) ? filtLat : rawLat;
     const lon = isNumber(filtLon) ? filtLon : rawLon;
     if (!isNumber(lat) || !isNumber(lon)) return;
+
     socket.emit("dropCube", { lat, lon });
+    emitTelemetry("drop", { lat, lon });
   });
 }
 
 // --- GPS ---
-function onGeo(lat, lon) {
+function onGeo(lat, lon, coords) {
   rawLat = lat;
   rawLon = lon;
 
@@ -219,6 +248,19 @@ function onGeo(lat, lon) {
   } else {
     filtLat = filtLat + (lat - filtLat) * GPS_ALPHA;
     filtLon = filtLon + (lon - filtLon) * GPS_ALPHA;
+  }
+
+  // Emit telemetry with sensor metadata (accuracy/speed/heading)
+  if (coords) {
+    emitTelemetry("gps", {
+      accuracy: coords.accuracy,
+      altitude: coords.altitude,
+      altitudeAccuracy: coords.altitudeAccuracy,
+      heading: coords.heading,
+      speed: coords.speed
+    });
+  } else {
+    emitTelemetry("gps");
   }
 
   const now = Date.now();
@@ -232,7 +274,6 @@ function onGeo(lat, lon) {
 
   if (now - lastSentAt < SEND_MIN_MS) return;
 
-  // deadband in meters
   const moved = distMeters(lastSentLat, lastSentLon, filtLat, filtLon);
   if (moved < DEAD_BAND_M) return;
 
@@ -242,13 +283,13 @@ function onGeo(lat, lon) {
   socket.emit("gpsUpdate", { lat: filtLat, lon: filtLon });
 }
 
-// Start watchPosition immediately (permissions may be needed on iOS; that's okay — it will fail quietly)
+// Start watchPosition
 if ("geolocation" in navigator) {
   navigator.geolocation.watchPosition(
     (pos) => {
       const lat = pos.coords.latitude;
       const lon = pos.coords.longitude;
-      if (isNumber(lat) && isNumber(lon)) onGeo(lat, lon);
+      if (isNumber(lat) && isNumber(lon)) onGeo(lat, lon, pos.coords);
     },
     () => {},
     {
@@ -268,7 +309,6 @@ function reconcileWorld(state) {
   const clientIds = Object.keys(state.clients || {});
   const blockCount = (state.droppedBlocks || []).length;
 
-  // HUD
   statusEl.textContent = `Connected | Users: ${clientIds.length} | Cubes: ${blockCount}`;
 
   // Players
@@ -286,12 +326,9 @@ function reconcileWorld(state) {
       sphere.position.x = cube.position.x;
       sphere.position.z = cube.position.z;
       sphere.position.y = camera.position.y + REMOTE_SPHERE_Y_OFFSET;
-    } else {
-      // No local sphere
-      if (remoteSpheres[id]) {
-        remoteSpheres[id].dispose();
-        delete remoteSpheres[id];
-      }
+    } else if (remoteSpheres[id]) {
+      remoteSpheres[id].dispose();
+      delete remoteSpheres[id];
     }
   }
 
@@ -312,7 +349,6 @@ function reconcileWorld(state) {
   for (const b of (state.droppedBlocks || [])) {
     if (!isNumber(b.lat) || !isNumber(b.lon)) continue;
     const cube = ensureDroppedCube(b.id, b.color);
-
     const { x, z } = latLonToXZ(b.lat, b.lon);
     cube.position.set(x, DROPPED_CUBE_Y, z);
   }
@@ -320,10 +356,15 @@ function reconcileWorld(state) {
 
 socket.on("connect", () => {
   statusEl.textContent = "Connected";
+  emitTelemetry("connect", { id: socket.id });
 });
 
 socket.on("worldState", (state) => {
   reconcileWorld(state);
+  emitTelemetry("state", {
+    users: Object.keys(state.clients || {}).length,
+    cubes: (state.droppedBlocks || []).length
+  });
 });
 
 // --- Render loop ---
