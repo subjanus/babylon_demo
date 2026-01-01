@@ -44,12 +44,192 @@ function ensureFollowButton() {
 }
 
 
+
+// Selection UI + delete action (created dynamically so we don't have to change index.html)
+let selectionEl = null;
+let btnDelete = null;
+
+function ensureSelectionUI() {
+  // Selection line: placed right under #status if possible
+  if (!selectionEl && statusEl && statusEl.parentElement) {
+    selectionEl = document.getElementById("selection");
+    if (!selectionEl) {
+      selectionEl = document.createElement("div");
+      selectionEl.id = "selection";
+      selectionEl.style.fontSize = "12px";
+      selectionEl.style.lineHeight = "1.3";
+      selectionEl.style.opacity = "0.9";
+      selectionEl.style.marginTop = "2px";
+      selectionEl.textContent = "Selected: none";
+      statusEl.parentElement.insertBefore(selectionEl, statusEl.nextSibling);
+    }
+  }
+
+  // Delete button: appears in the button row
+  const hudButtons = document.getElementById("buttons");
+  if (hudButtons && !btnDelete) {
+    btnDelete = document.getElementById("btnDelete");
+    if (!btnDelete) {
+      btnDelete = document.createElement("button");
+      btnDelete.id = "btnDelete";
+      btnDelete.textContent = "Delete";
+      btnDelete.disabled = true;
+      hudButtons.appendChild(btnDelete);
+    }
+  }
+}
+
+
 // --- Babylon ---
 const { engine, scene } = initScene(canvas);
 const camera = initCamera(scene, canvas);
 
 // A root node for world objects (lets us optionally stabilize heading by rotating the world).
 const worldRoot = new BABYLON.TransformNode("worldRoot", scene);
+
+
+// --- Selection / interaction ---
+const SELECT_DELETE_RANGE_M = 8; // meters; must be within this to delete a dropped cube
+
+let selectedMesh = null;
+let selectedLabel = "none";
+let selectedLat = null;
+let selectedLon = null;
+let selectedKind = null;
+let selectedId = null;
+
+// Simple visual highlight
+let highlight = null;
+try {
+  highlight = new BABYLON.HighlightLayer("hl", scene);
+} catch (_) {
+  highlight = null;
+}
+
+function clearSelection() {
+  if (highlight && selectedMesh) {
+    try { highlight.removeMesh(selectedMesh); } catch (_) {}
+  }
+  selectedMesh = null;
+  selectedLabel = "none";
+  selectedLat = null;
+  selectedLon = null;
+  selectedKind = null;
+  selectedId = null;
+  if (selectionEl) selectionEl.textContent = "Selected: none";
+  if (btnDelete) btnDelete.disabled = true;
+}
+
+function setSelection(mesh) {
+  if (!mesh) return clearSelection();
+
+  // Only select meshes that opt in via metadata
+  const md = mesh.metadata || {};
+  if (!md.kind) return clearSelection();
+
+  if (highlight) {
+    if (selectedMesh) {
+      try { highlight.removeMesh(selectedMesh); } catch (_) {}
+    }
+    try { highlight.addMesh(mesh, BABYLON.Color3.FromHexString("#FFCC00")); } catch (_) {}
+  }
+
+  selectedMesh = mesh;
+  selectedKind = md.kind;
+  selectedId = md.blockId ?? md.socketId ?? null;
+
+  selectedLat = (typeof md.lat === "number") ? md.lat : null;
+  selectedLon = (typeof md.lon === "number") ? md.lon : null;
+
+  if (selectedKind === "droppedCube") selectedLabel = `Cube #${selectedId}`;
+  else if (selectedKind === "playerCube" || selectedKind === "playerSphere") selectedLabel = `Player ${shortId(String(selectedId || ""))}`;
+  else selectedLabel = String(md.kind);
+
+  updateSelectionHUD();
+}
+
+function currentLatLon() {
+  if (isNumber(filtLat) && isNumber(filtLon)) return { lat: filtLat, lon: filtLon };
+  if (isNumber(rawLat) && isNumber(rawLon)) return { lat: rawLat, lon: rawLon };
+  return null;
+}
+
+function updateSelectionHUD() {
+  if (!selectionEl) return;
+
+  if (!selectedMesh) {
+    selectionEl.textContent = "Selected: none";
+    if (btnDelete) btnDelete.disabled = true;
+    return;
+  }
+
+  let distTxt = "distance: ?";
+  let canDelete = false;
+
+  const me = currentLatLon();
+  if (me && isNumber(selectedLat) && isNumber(selectedLon) && worldOrigin) {
+    const d = distMeters(me.lat, me.lon, selectedLat, selectedLon);
+    distTxt = `distance: ${d.toFixed(1)}m`;
+
+    if (selectedKind === "droppedCube" && d <= SELECT_DELETE_RANGE_M) {
+      canDelete = true;
+    }
+  }
+
+  selectionEl.textContent = `Selected: ${selectedLabel} | ${distTxt}`;
+
+  if (btnDelete) {
+    btnDelete.disabled = !canDelete;
+  }
+}
+
+function attemptDeleteSelected() {
+  if (!selectedMesh) return;
+
+  if (selectedKind !== "droppedCube" || selectedId == null) return;
+
+  const me = currentLatLon();
+  if (!me || !isNumber(selectedLat) || !isNumber(selectedLon) || !worldOrigin) return;
+
+  const d = distMeters(me.lat, me.lon, selectedLat, selectedLon);
+  if (d > SELECT_DELETE_RANGE_M) return;
+
+  socket.emit("deleteCube", { blockId: selectedId });
+  emitTelemetry("ui", { action: "deleteCube", blockId: selectedId, distM: d });
+
+  // Optimistically clear selection; reconcile will dispose the cube after server confirms
+  clearSelection();
+}
+
+// Pointer selection (tap / click on canvas)
+scene.onPointerObservable.add((pi) => {
+  if (pi.type !== BABYLON.PointerEventTypes.POINTERDOWN) return;
+
+  // Ignore clicks on HUD/buttons
+  const target = pi.event && pi.event.target;
+  if (target && target.id && (target.id.startsWith("btn") || target.id === "hud" || target.id === "buttons" || target.id === "status" || target.id === "selection")) {
+    return;
+  }
+
+  const pick = scene.pick(scene.pointerX, scene.pointerY);
+  if (pick && pick.hit && pick.pickedMesh) {
+    setSelection(pick.pickedMesh);
+  } else {
+    clearSelection();
+  }
+});
+
+// Delete via button / keyboard
+if (btnDelete) {
+  btnDelete.addEventListener("click", attemptDeleteSelected);
+}
+
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Delete" || e.key === "Backspace") {
+    attemptDeleteSelected();
+  }
+});
+
 
 // Expose minimal debug handles (optional)
 window.__scene = scene;
@@ -136,7 +316,9 @@ function ensurePlayerCube(id, color) {
     const cube = initBox(scene, color);
     cube.name = `playerCube_${id}`;
     cube.parent = worldRoot;
-    playerCubes[id] = cube;
+      cube.isPickable = true;
+  cube.metadata = { kind: "playerCube", socketId: id };
+playerCubes[id] = cube;
   }
   return playerCubes[id];
 }
@@ -156,7 +338,9 @@ function ensureRemoteSphere(id, color) {
   sphere.material = mat;
 
   sphere.parent = worldRoot;
-  sphere.isPickable = false;
+  sphere.isPickable = true;
+
+  sphere.metadata = { kind: "playerSphere", socketId: id };
 
   remoteSpheres[id] = sphere;
   return sphere;
@@ -167,7 +351,9 @@ function ensureDroppedCube(blockId, color) {
     const cube = initBox(scene, color);
     cube.name = `droppedCube_${blockId}`;
     cube.parent = worldRoot;
-    droppedCubes[blockId] = cube;
+      cube.isPickable = true;
+  cube.metadata = { kind: "droppedCube", blockId: blockId };
+droppedCubes[blockId] = cube;
   }
   return droppedCubes[blockId];
 }
@@ -231,6 +417,8 @@ function emitTelemetry(kind, extra = {}) {
 
 // --- UI wiring ---
 ensureFollowButton();
+ensureSelectionUI();
+if (btnDelete && !btnDelete.__wired) { btnDelete.__wired = true; btnDelete.addEventListener("click", attemptDeleteSelected); }
 if (btnPerm) {
   btnPerm.addEventListener("click", async () => {
     const ok = await requestDevicePermissions();
@@ -349,6 +537,8 @@ function reconcileWorld(state) {
     if (isNumber(c.lat) && isNumber(c.lon)) {
       const { x, z } = latLonToXZ(c.lat, c.lon);
       cube.position.set(x, PLAYER_CUBE_Y, z);
+      // metadata for selection/distance
+      cube.metadata = { ...(cube.metadata || {}), lat: c.lat, lon: c.lon, kind: "playerCube", socketId: id };
     }
 
     // Remote sphere (everyone except local socket.id)
@@ -357,6 +547,7 @@ function reconcileWorld(state) {
       sphere.position.x = cube.position.x;
       sphere.position.z = cube.position.z;
       sphere.position.y = camera.position.y + REMOTE_SPHERE_Y_OFFSET;
+      sphere.metadata = { ...(sphere.metadata || {}), lat: c.lat, lon: c.lon, kind: "playerSphere", socketId: id };
     } else if (remoteSpheres[id]) {
       remoteSpheres[id].dispose();
       delete remoteSpheres[id];
@@ -391,6 +582,29 @@ function reconcileWorld(state) {
     const cube = ensureDroppedCube(b.id, b.color);
     const { x, z } = latLonToXZ(b.lat, b.lon);
     cube.position.set(x, DROPPED_CUBE_Y, z);
+    cube.metadata = { ...(cube.metadata || {}), lat: b.lat, lon: b.lon, kind: "droppedCube", blockId: b.id };
+
+
+  // Remove deleted dropped cubes (e.g., after someone deletes one)
+  const presentBlocks = new Set((state.droppedBlocks || []).map(b => String(b.id)));
+  for (const id of Object.keys(droppedCubes)) {
+    if (!presentBlocks.has(String(id))) {
+      if (selectedKind === "droppedCube" && String(selectedId) === String(id)) {
+        clearSelection();
+      }
+      droppedCubes[id].dispose();
+      delete droppedCubes[id];
+    }
+  }
+
+  // If the selected mesh was disposed for any reason, clear it
+  if (selectedMesh && selectedMesh.isDisposed && selectedMesh.isDisposed()) {
+    clearSelection();
+  }
+
+  // Update selection HUD (distance may change as GPS updates)
+  updateSelectionHUD();
+
   }
 }
 
@@ -410,6 +624,7 @@ socket.on("worldState", (state) => {
 // --- Render loop ---
 engine.runRenderLoop(() => {
   applyHeadingStabilization();
+  updateSelectionHUD();
   scene.render();
 });
 

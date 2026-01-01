@@ -49,6 +49,20 @@ function isNumber(n) {
   return typeof n === "number" && Number.isFinite(n);
 }
 
+
+const MAX_DELETE_M = 8; // must be within this many meters to delete a cube
+
+function metersPerDegLon(lat) {
+  return 111320 * Math.cos(lat * Math.PI / 180);
+}
+
+function approxDistMeters(lat1, lon1, lat2, lon2) {
+  const lat0 = (worldOrigin?.lat ?? lat1);
+  const kLon = metersPerDegLon(lat0);
+  const dx = (lon2 - lon1) * kLon;
+  const dz = (lat2 - lat1) * 111320;
+  return Math.hypot(dx, dz);
+}
 // Debug endpoints (view from Mac browser)
 app.get("/debug/state", (_req, res) => {
   res.json({ clients, droppedBlocks, worldOrigin });
@@ -121,7 +135,31 @@ io.on("connection", (socket) => {
     emitWorldState();
   });
 
-  socket.on("toggleColor", () => {
+  
+  socket.on("deleteCube", ({ blockId }) => {
+    const idNum = Number(blockId);
+    if (!Number.isFinite(idNum)) return;
+
+    const idx = droppedBlocks.findIndex(b => b.id === idNum);
+    if (idx === -1) return;
+
+    // Basic server-side guard: require recent-ish client position and proximity.
+    const me = clients[socket.id];
+    const block = droppedBlocks[idx];
+
+    if (!me || !isNumber(me.lat) || !isNumber(me.lon)) return;
+
+    const d = approxDistMeters(me.lat, me.lon, block.lat, block.lon);
+    if (d > MAX_DELETE_M) return;
+
+    droppedBlocks.splice(idx, 1);
+
+    pushTelemetry({ t: Date.now(), id: socket.id, kind: "deleteCube", blockId: idNum, distM: d });
+
+    emitWorldState();
+  });
+
+socket.on("toggleColor", () => {
     const current = clients[socket.id]?.color;
     if (!current) return;
 
