@@ -1,36 +1,26 @@
 // public/initBox.js
-// Creates the local player cube as a pure world-space mesh.
-// Intentionally NOT parented to the camera or any transform node.
+// User representation as a sphere positioned ABOVE the camera.
 
 export function initBox(scene, hex = "#00A3FF") {
-  if (!scene || !window.BABYLON) {
-    console.error("initBox: BABYLON or scene not available");
-    return null;
-  }
-
-  const box = BABYLON.MeshBuilder.CreateBox(
+  const sphere = BABYLON.MeshBuilder.CreateSphere(
     "me",
-    { size: 2 },
+    { diameter: 2, segments: 16 },
     scene
   );
 
   const mat = new BABYLON.StandardMaterial("meMat", scene);
   mat.diffuseColor = BABYLON.Color3.FromHexString(hex);
   mat.specularColor = BABYLON.Color3.Black();
-  box.material = mat;
+  sphere.material = mat;
 
-  // 🔒 Ensure absolute world-space behavior
-  box.parent = null;
+  // Ensure world-space, not parented
+  sphere.parent = null;
 
-  // 🔽 Place well below camera / horizon
-  box.position.x = 0;
-  box.position.y = -130;
-  box.position.z = 0;
+  // Start above the camera
+  sphere.position.set(0, 10, 0);
 
-  // Optional safety / debugging flags
-  box.isPickable = false;
-  box.alwaysSelectAsActiveMesh = true;
-  box.checkCollisions = false;
+  sphere.isPickable = false;
+  sphere.alwaysSelectAsActiveMesh = true;
 
-  return box;
+  return sphere;
 }
