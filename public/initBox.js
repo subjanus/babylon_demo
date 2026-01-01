@@ -9,7 +9,7 @@ export function initBox(scene, hex = "#00A3FF") {
 
   // 🔽 DROP THE CUBE WELL BELOW CAMERA LEVEL 
   box.position.x = 0;
-  box.position.y = -30;   // <<<<< THIS IS THE KEY LINE
+  box.position.y = -130;   // <<<<< THIS IS THE KEY LINE
   box.position.z = 0;
 
   return box;
