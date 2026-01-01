@@ -1,8 +1,0 @@
-ea4bc82a6ad023ab7ee23ee620429895
-::res://::1767228473
-::res://scenes/::1767228397
-Main.tscn::PackedScene::-1::1767228396::0::1::::<><>::res://scripts/Main.gd
-::res://scripts/::1767227595
-Main.gd::GDScript::-1::1767245496::0::1::::<>Node3D<>::
-Network.gd::GDScript::-1::1767245496::0::1::::Network<>Node<>::
-PlayerAvatar.gd::GDScript::-1::1767245496::0::1::::PlayerAvatar<>Node3D<>::
