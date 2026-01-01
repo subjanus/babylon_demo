@@ -1,5 +1,4 @@
 // public/initBox.js
-
 export function initBox(scene, hex = "#00A3FF") {
   const box = BABYLON.MeshBuilder.CreateBox("me", { size: 2 }, scene);
 
@@ -7,10 +6,14 @@ export function initBox(scene, hex = "#00A3FF") {
   mat.diffuseColor = BABYLON.Color3.FromHexString(hex);
   box.material = mat;
 
-  // 🔽 DROP THE CUBE WELL BELOW CAMERA LEVEL 
-  box.position.x = 0;
-  box.position.y = -130;   // <<<<< THIS IS THE KEY LINE
-  box.position.z = 0;
+  // Ensure box is NOT parented to camera or any transform
+  box.parent = null;
+
+  // Force absolute world position well below camera
+  box.position.set(0, -130, 0);
+
+  box.isPickable = false;
+  box.alwaysSelectAsActiveMesh = true;
 
   return box;
 }
