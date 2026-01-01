@@ -84,6 +84,30 @@ function ensureSelectionUI() {
 const { engine, scene } = initScene(canvas);
 const camera = initCamera(scene, canvas);
 
+// Drop indicator / pointer (rotates with camera orientation)
+const dropIndicator = BABYLON.MeshBuilder.CreateCylinder(
+  "dropIndicator",
+  { diameterTop: 0, diameterBottom: 0.7, height: 1.4, tessellation: 4 },
+  scene
+);
+dropIndicator.isPickable = false;
+
+// Point it forward (cone axis is Y by default)
+dropIndicator.rotation.x = Math.PI / 2;
+
+// Parent to camera so it mimics phone/mouse rotation perfectly
+dropIndicator.parent = camera;
+
+// Place slightly below and a touch forward so it reads as "at my feet, pointing"
+dropIndicator.position.set(0, -2.6, 2.2);
+
+const indMat = new BABYLON.StandardMaterial("dropIndicatorMat", scene);
+indMat.diffuseColor = BABYLON.Color3.FromHexString("#FFCC00");
+indMat.emissiveColor = BABYLON.Color3.FromHexString("#7A5B00");
+indMat.specularColor = BABYLON.Color3.Black();
+dropIndicator.material = indMat;
+
+
 // A root node for world objects (lets us optionally stabilize heading by rotating the world).
 const worldRoot = new BABYLON.TransformNode("worldRoot", scene);
 
@@ -749,6 +773,7 @@ if ("geolocation" in navigator) {
 
 // --- World reconciliation (authoritative snapshots) ---
 let lastWorldState = null;
+let myDeletedCount = 0;
 function reconcileWorld(state) {
   lastWorldState = state;
   if (state.worldOrigin && (!worldOrigin || state.worldOrigin.lat !== worldOrigin.lat || state.worldOrigin.lon !== worldOrigin.lon)) {
@@ -759,7 +784,7 @@ function reconcileWorld(state) {
   const blockCount = (state.droppedBlocks || []).length;
 
   setUIStatus(`Connected (${shortId(socket.id)})`);
-  setUICounts(clientIds.length, blockCount, (state.actionCounters && state.actionCounters.deletedCubes) || 0);
+  setUICounts(clientIds.length, blockCount, myDeletedCount);
 
   // Players
   for (const [id, c] of Object.entries(state.clients || {})) {
@@ -836,6 +861,17 @@ function reconcileWorld(state) {
   updateSelectionHUD();
 }
 
+
+socket.on("myCounters", (c) => {
+  if (!c || typeof c !== "object") return;
+  if (typeof c.deletedCubes === "number" && Number.isFinite(c.deletedCubes)) {
+    myDeletedCount = c.deletedCubes;
+    // Update counts immediately if we have last state
+    const users = Object.keys(lastWorldState?.clients || {}).length;
+    const cubes = (lastWorldState?.droppedBlocks || []).length;
+    setUICounts(users, cubes, myDeletedCount);
+  }
+});
 
 socket.on("deleteResult", (r) => {
   // Quick feedback so you can tell if the server accepted the delete
