@@ -506,8 +506,8 @@ let yawSmoothed = 0;
 
 let lastYawSent = null;
 let lastYawSentAt = 0;
-const YAW_SEND_MIN_MS = 120;
-const YAW_SEND_MIN_DELTA = 0.03; // ~1.7 degrees
+const YAW_SEND_MIN_MS = 60;
+const YAW_SEND_MIN_DELTA = 0.01; // ~0.6 degrees
 
 // Telemetry timing
 let lastTelemAt = 0;
@@ -587,15 +587,22 @@ droppedCubes[blockId] = cube;
   return droppedCubes[blockId];
 }
 
-// Extract yaw from camera quaternion (radians)
+// Extract yaw from active camera (radians)
+// Works for both quaternion-based cameras and Euler-rotation cameras.
 function getCameraYawRad() {
-  const q = camera.rotationQuaternion;
-  if (!q) return camera.rotation?.y || 0;
+  const cam = scene.activeCamera || camera;
+  if (!cam) return 0;
 
-  const ysqr = q.y * q.y;
-  const t3 = 2.0 * (q.w * q.y + q.x * q.z);
-  const t4 = 1.0 - 2.0 * (ysqr + q.z * q.z);
-  return Math.atan2(t3, t4);
+  const q = cam.rotationQuaternion;
+  if (q) {
+    // yaw from quaternion
+    const ysqr = q.y * q.y;
+    const t3 = 2.0 * (q.w * q.y + q.x * q.z);
+    const t4 = 1.0 - 2.0 * (ysqr + q.z * q.z);
+    return Math.atan2(t3, t4);
+  }
+
+  return cam.rotation?.y || 0;
 }
 
 function normalizeAngleRad(a) {
@@ -673,10 +680,13 @@ if (btnPerm) {
 }
 
 if (btnNorth) {
-  btnNorth.textContent = "Lock North: Disabled";
   btnNorth.addEventListener("click", () => {
-    setUIStatus("Lock North disabled (drag-look mode)");
-    emitTelemetry("ui", { action: "lockNorthDisabled" });
+    lockNorth = !lockNorth;
+    yawSmoothed = getCameraYawRad();
+    yawZero = yawSmoothed;
+
+    btnNorth.textContent = lockNorth ? "Lock North: On" : "Lock North: Off";
+    emitTelemetry("ui", { action: "lockNorth", lockNorth });
   });
 }
 
