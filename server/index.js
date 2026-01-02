@@ -91,7 +91,7 @@ app.get("/debug/telemetry", (req, res) => {
 
 io.on("connection", (socket) => {
   const color = COLORS[nextColorIdx++ % COLORS.length];
-  clients[socket.id] = { lat: null, lon: null, color };
+  clients[socket.id] = { lat: null, lon: null, yaw: null, color };
 
   deletedCubesByClient[socket.id] = deletedCubesByClient[socket.id] || 0;
   socket.emit("myCounters", { deletedCubes: deletedCubesByClient[socket.id] });
@@ -102,7 +102,20 @@ io.on("connection", (socket) => {
   // Record connect
   pushTelemetry({ t: Date.now(), id: socket.id, kind: "connect", color });
 
-  socket.on("gpsUpdate", ({ lat, lon }) => {
+  
+  socket.on("orientationUpdate", ({ yaw }) => {
+    if (!clients[socket.id]) return;
+    const y = Number(yaw);
+    if (!Number.isFinite(y)) return;
+
+    clients[socket.id].yaw = y;
+
+    // We intentionally do NOT spam worldState for tiny changes by itself.
+    // But for "see others rotate" we *do* broadcast at a modest rate on the client.
+    emitWorldState();
+  });
+
+socket.on("gpsUpdate", ({ lat, lon }) => {
     if (!clients[socket.id]) return;
     if (!isNumber(lat) || !isNumber(lon)) return;
 

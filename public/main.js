@@ -89,40 +89,6 @@ const camera = initCamera(scene, canvas);
 // A root node for world objects (lets us optionally stabilize heading by rotating the world).
 const worldRoot = new BABYLON.TransformNode("worldRoot", scene);
 
-// --- Drop pointer (world-space marker under you, rotates to match camera heading) ---
-const dropPointer = BABYLON.MeshBuilder.CreateCylinder(
-  "dropPointer",
-  { diameterTop: 0, diameterBottom: 0.9, height: 1.6, tessellation: 4 },
-  scene
-);
-dropPointer.isPickable = false;
-dropPointer.parent = worldRoot;
-
-// Orient the pyramid to point "forward" along +Z in local space (we'll spin it by yaw)
-dropPointer.rotation.x = Math.PI / 2;
-
-const dropPointerMat = new BABYLON.StandardMaterial("dropPointerMat", scene);
-dropPointerMat.diffuseColor = BABYLON.Color3.FromHexString("#FFCC00");
-dropPointerMat.emissiveColor = BABYLON.Color3.FromHexString("#3b2f00");
-dropPointerMat.specularColor = BABYLON.Color3.Black();
-dropPointer.material = dropPointerMat;
-
-// Keep it under the local player and rotate it to mirror camera yaw (mouse or phone)
-function updateDropPointer() {
-  if (!socket?.id) return;
-  const me = playerCubes[socket.id];
-  if (!me) return;
-
-  // Position it at your feet (same x/z as your local player cube)
-  dropPointer.position.x = me.position.x;
-  dropPointer.position.z = me.position.z;
-  dropPointer.position.y = DROPPED_CUBE_Y + 0.25;
-
-  // Mirror the camera heading in the rendered world.
-  // Because worldRoot may be rotated (Lock North), compensate so pointer matches what you see.
-  const yaw = getCameraYawRad();
-  dropPointer.rotation.y = yaw + worldRoot.rotation.y;
-}
 
 
 // --- In-canvas Drawer UI (Babylon GUI) ---
@@ -537,12 +503,16 @@ let lockNorth = false;
 let yawZero = 0;
 let yawSmoothed = 0;
 
+let lastYawSent = null;
+let lastYawSentAt = 0;
+const YAW_SEND_MIN_MS = 120;
+const YAW_SEND_MIN_DELTA = 0.03; // ~1.7 degrees
+
 // Telemetry timing
 let lastTelemAt = 0;
 
 // Entities
-const playerCubes = {};   // socketId -> cube mesh (including local)
-const remoteSpheres = {}; // socketId -> sphere mesh (remote only)
+const playerPointers = {}; // socketId -> pointer mesh (pyramid)
 const droppedCubes = {};  // blockId -> cube mesh
 
 // --- Helpers ---
@@ -577,39 +547,31 @@ function distMeters(lat1, lon1, lat2, lon2) {
   return Math.hypot(a.x - b.x, a.z - b.z);
 }
 
-function ensurePlayerCube(id, color) {
-  if (!playerCubes[id]) {
-    const cube = initBox(scene, color);
-    cube.name = `playerCube_${id}`;
-    cube.parent = worldRoot;
-      cube.isPickable = true;
-  cube.metadata = { kind: "playerCube", socketId: id };
-playerCubes[id] = cube;
-  }
-  return playerCubes[id];
-}
 
-function ensureRemoteSphere(id, color) {
-  if (remoteSpheres[id]) return remoteSpheres[id];
+function ensurePlayerPointer(id, color) {
+  if (playerPointers[id]) return playerPointers[id];
 
-  const sphere = BABYLON.MeshBuilder.CreateSphere(
-    `remoteSphere_${id}`,
-    { diameter: 2, segments: 16 },
+  // A pyramid-like marker (4-sided cone) that indicates facing direction.
+  const p = BABYLON.MeshBuilder.CreateCylinder(
+    `playerPointer_${id}`,
+    { diameterTop: 0, diameterBottom: 0.9, height: 1.6, tessellation: 4 },
     scene
   );
 
-  const mat = new BABYLON.StandardMaterial(`remoteSphereMat_${id}`, scene);
+  const mat = new BABYLON.StandardMaterial(`playerPointerMat_${id}`, scene);
   mat.diffuseColor = BABYLON.Color3.FromHexString(color || "#FFCC00");
+  mat.emissiveColor = BABYLON.Color3.FromHexString("#1f2937");
   mat.specularColor = BABYLON.Color3.Black();
-  sphere.material = mat;
+  p.material = mat;
 
-  sphere.parent = worldRoot;
-  sphere.isPickable = true;
+  p.parent = worldRoot;
+  p.isPickable = true;
 
-  sphere.metadata = { kind: "playerSphere", socketId: id };
+  // Point forward along +Z (cone axis is Y)
+  p.rotation.x = Math.PI / 2;
 
-  remoteSpheres[id] = sphere;
-  return sphere;
+  playerPointers[id] = p;
+  return p;
 }
 
 function ensureDroppedCube(blockId, color) {
@@ -639,6 +601,22 @@ function normalizeAngleRad(a) {
   while (a > Math.PI) a -= 2 * Math.PI;
   while (a < -Math.PI) a += 2 * Math.PI;
   return a;
+}
+
+function maybeSendOrientationUpdate() {
+  if (!socket || !socket.connected) return;
+  const now = Date.now();
+  if (now - lastYawSentAt < YAW_SEND_MIN_MS) return;
+
+  const yaw = getCameraYawRad();
+  if (lastYawSent !== null) {
+    const d = normalizeAngleRad(yaw - lastYawSent);
+    if (Math.abs(d) < YAW_SEND_MIN_DELTA) return;
+  }
+
+  lastYawSent = yaw;
+  lastYawSentAt = now;
+  socket.emit("orientationUpdate", { yaw });
 }
 
 function applyHeadingStabilization() {
@@ -800,45 +778,35 @@ function reconcileWorld(state) {
   setUIStatus(`Connected (${shortId(socket.id)})`);
   setUICounts(clientIds.length, blockCount, myDeletedCount);
 
-  // Players
+  // Players (pointers only; no cubes/spheres)
   for (const [id, c] of Object.entries(state.clients || {})) {
-    const cube = ensurePlayerCube(id, c.color);
+    const ptr = ensurePlayerPointer(id, c.color);
 
     if (isNumber(c.lat) && isNumber(c.lon)) {
       const { x, z } = latLonToXZ(c.lat, c.lon);
-      cube.position.set(x, PLAYER_CUBE_Y, z);
-      cube.metadata = { ...(cube.metadata || {}), lat: c.lat, lon: c.lon, kind: "playerCube", socketId: id };
+      ptr.position.set(x, DROPPED_CUBE_Y + 0.25, z);
+      ptr.metadata = { ...(ptr.metadata || {}), lat: c.lat, lon: c.lon, kind: "playerPointer", socketId: id };
     }
 
-    // Remote sphere (everyone except local socket.id)
-    if (id !== socket.id) {
-      const sphere = ensureRemoteSphere(id, c.color);
-      sphere.position.x = cube.position.x;
-      sphere.position.z = cube.position.z;
-      sphere.position.y = camera.position.y + REMOTE_SPHERE_Y_OFFSET;
-      sphere.metadata = { ...(sphere.metadata || {}), lat: c.lat, lon: c.lon, kind: "playerSphere", socketId: id };
-    } else if (remoteSpheres[id]) {
-      remoteSpheres[id].dispose();
-      delete remoteSpheres[id];
+    // Rotate to match that player's heading (yaw) in world coordinates.
+    // Since ptr is parented to worldRoot, convert world yaw into local yaw by subtracting worldRoot rotation.
+    if (isNumber(c.yaw)) {
+      ptr.rotation.y = c.yaw - worldRoot.rotation.y;
     }
   }
 
   // Remove disconnected players
-  for (const id of Object.keys(playerCubes)) {
-    if (!state.clients || !state.clients[id]) {
-      playerCubes[id].dispose();
-      delete playerCubes[id];
 
-      if (remoteSpheres[id]) {
-        remoteSpheres[id].dispose();
-        delete remoteSpheres[id];
-      }
+  for (const id of Object.keys(playerPointers)) {
+    if (!state.clients || !state.clients[id]) {
+      playerPointers[id].dispose();
+      delete playerPointers[id];
     }
   }
 
   // Follow mode: translate the world so the local player's cube stays centered under the camera.
-  if (followMe && socket.id && playerCubes[socket.id]) {
-    const me = playerCubes[socket.id];
+  if (followMe && socket.id && playerPointers[socket.id]) {
+    const me = playerPointers[socket.id];
     worldRoot.position.x = -me.position.x;
     worldRoot.position.z = -me.position.z;
   }
@@ -920,7 +888,7 @@ socket.on("worldState", (state) => {
 // --- Render loop ---
 engine.runRenderLoop(() => {
   applyHeadingStabilization();
-  updateDropPointer();
+  maybeSendOrientationUpdate();
   updateSelectionHUD();
   scene.render();
 });
