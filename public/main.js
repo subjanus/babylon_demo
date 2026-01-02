@@ -501,18 +501,32 @@ function initEnvironment() {
   scene.fogDensity = 0.006;
   scene.fogColor = new BABYLON.Color3(0.04, 0.06, 0.09);
 
+  // Sunlight (directional) + soft ambient fill
+  const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.35, -1.0, 0.25), scene);
+  sun.position = new BABYLON.Vector3(120, 260, -120);
+  sun.intensity = 1.25;
+  sun.diffuse = new BABYLON.Color3(1.0, 0.98, 0.92);
+  sun.specular = new BABYLON.Color3(1.0, 1.0, 1.0);
+
+  const skyFill = new BABYLON.HemisphericLight("skyFill", new BABYLON.Vector3(0, 1, 0), scene);
+  skyFill.intensity = 0.35;
+  skyFill.diffuse = new BABYLON.Color3(0.65, 0.72, 0.85);
+  skyFill.groundColor = new BABYLON.Color3(0.10, 0.10, 0.12);
+
   // A big ground plane at "ground level" (visual + soft constraint)
   const ground = BABYLON.MeshBuilder.CreateGround(
     'groundPlane',
     { width: 2500, height: 2500, subdivisions: 2 },
     scene
   );
-  ground.position.y = DROPPED_CUBE_Y;
+  // Dropped cubes are size 2 and centered at DROPPED_CUBE_Y, so their bottoms are at (DROPPED_CUBE_Y - 1).
+  // Put the ground plane slightly below the cube bottoms to avoid z-fighting.
+  ground.position.y = DROPPED_CUBE_Y - 1.05;
 
   const gmat = new BABYLON.StandardMaterial('groundMat', scene);
-  gmat.diffuseColor = new BABYLON.Color3(0.06, 0.08, 0.10);
+  gmat.diffuseColor = new BABYLON.Color3(0.14, 0.16, 0.19);
   gmat.specularColor = BABYLON.Color3.Black();
-  gmat.alpha = 0.98;
+  gmat.alpha = 0.92;
   ground.material = gmat;
   ground.isPickable = false;
 
