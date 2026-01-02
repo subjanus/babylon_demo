@@ -1,27 +1,31 @@
 export function initCamera(scene, canvas) {
-  // Replace DeviceOrientationCamera with a drag/touch controlled camera.
-  // This avoids compass/device-orientation jitter and makes mapping tests much more stable.
+  // Drag-look camera for both desktop and mobile.
+  // (We intentionally avoid DeviceOrientationCamera here to eliminate compass/gyro instability.)
   const camera = new BABYLON.UniversalCamera("cam", new BABYLON.Vector3(0, 1.8, 0), scene);
-
-  // Look forward (Babylon forward is +Z by default for this setup)
-  camera.setTarget(new BABYLON.Vector3(0, 1.8, 1));
 
   // Reduce near clipping plane to avoid slicing meshes when pitching up/down
   camera.minZ = 0.01;
 
-  // Attach pointer/touch look controls
+  // We don't want WASD translation for this experience; GPS moves the world.
+  camera.speed = 0;
+
+  // Sensible feel for drag look
+  camera.angularSensibility = 4000;
+  camera.inertia = 0.2;
+
+  // Attach controls (mouse + touch). Canvas already has touch-action:none in CSS.
   camera.attachControl(canvas, true);
 
-  // Prevent keyboard/touch movement from translating the camera (we only want look).
+  // Remove inputs that cause unwanted movement/zoom
   try {
-    camera.inputs.removeByType("FreeCameraKeyboardMoveInput");
+    if (camera.inputs?.attached?.keyboard) camera.inputs.remove(camera.inputs.attached.keyboard);
+    if (camera.inputs?.attached?.mousewheel) camera.inputs.remove(camera.inputs.attached.mousewheel);
+    if (camera.inputs?.attached?.touch) {
+      // Prevent touch from translating camera; keep rotation only.
+      camera.inputs.attached.touch.touchMoveSensibility = 1000000;
+      camera.inputs.attached.touch.touchAngularSensibility = 6000;
+    }
   } catch (_) {}
-  try {
-    camera.inputs.removeByType("FreeCameraTouchInput");
-  } catch (_) {}
-
-  // Make drag feel less twitchy
-  camera.angularSensibility = 4000;
 
   return camera;
 }

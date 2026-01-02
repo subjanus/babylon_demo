@@ -225,11 +225,11 @@ function createDrawerUI() {
     }
   });
 
-  const bNorth = mkButton("uiNorth", "Lock North: Disabled", () => {
+  const bNorth = mkButton("uiNorth", "Lock North: Off", () => {
     lockNorth = !lockNorth;
     yawSmoothed = getCameraYawRad();
     yawZero = yawSmoothed;
-    bNorth.textBlock.text = "Lock North: Disabled";
+    bNorth.textBlock.text = lockNorth ? "Lock North: On" : "Lock North: Off";
     emitTelemetry("ui", { action: "lockNorth", lockNorth });
   });
 
@@ -621,11 +621,17 @@ function maybeSendOrientationUpdate() {
 }
 
 function applyHeadingStabilization() {
-  // Device/compass-based Lock North is disabled in this mode.
-  // We keep the world un-rotated so GPS mapping is easier to validate.
-  worldRoot.rotation.y = 0;
-}
+  if (!lockNorth) {
+    worldRoot.rotation.y = 0;
+    return;
+  }
 
+  const yaw = getCameraYawRad();
+  const delta = normalizeAngleRad(yaw - yawSmoothed);
+  yawSmoothed = normalizeAngleRad(yawSmoothed + delta * YAW_ALPHA);
+
+  worldRoot.rotation.y = -(yawSmoothed - yawZero);
+}
 
 // --- Telemetry emit (best effort) ---
 function emitTelemetry(kind, extra = {}) {
@@ -667,16 +673,11 @@ if (btnPerm) {
 }
 
 if (btnNorth) {
+  btnNorth.textContent = "Lock North: Disabled";
   btnNorth.addEventListener("click", () => {
-    lockNorth = false;
-    yawSmoothed = getCameraYawRad();
-    yawZero = yawSmoothed;
-
-    // Keep the label consistent
-    if (typeof bNorth !== "undefined" && bNorth && bNorth.textBlock) bNorth.textBlock.text = "Lock North: Disabled";
-    if (typeof btnNorth !== "undefined" && btnNorth) btnNorth.textContent = "Lock North: Disabled";
-    emitTelemetry("ui", { action: "lockNorth", lockNorth: false, disabled: true });
-});
+    setUIStatus("Lock North disabled (drag-look mode)");
+    emitTelemetry("ui", { action: "lockNorthDisabled" });
+  });
 }
 
 if (btnColor) {
