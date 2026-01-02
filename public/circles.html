@@ -27,7 +27,15 @@
 
       <div class="muted" style="margin:12px 0 6px 0;">Radius (meters): <span id="radiusVal">80</span></div>
       <div class="row"><input id="radius" type="range" min="5" max="350" value="80" /></div>
+    
+    <div style="margin-top:12px;">
+      <div class="muted" style="margin-bottom:6px;">Spawn around player:</div>
+      <select id="target" style="width:100%; background:#111827; color:#e6edf3; border:1px solid #374151; border-radius:14px; padding:12px 12px; font-size:14px;">
+        <option value="">Auto (first active player)</option>
+      </select>
+      <div class="muted" style="margin-top:6px;">Tip: if you opened this page on a laptop, pick your phone’s socket id here.</div>
     </div>
+</div>
 
     <button id="spawn">Spawn circles</button>
     <button id="clear" style="background:#2a0f14; border-color:#7f1d1d;">Clear circles</button>
@@ -54,8 +62,59 @@
 
     socket.on('connect', () => { status.textContent = 'Connected'; });
 
+    const targetEl = document.getElementById('target');
+
+    function shortId(id) {
+      if (!id) return '';
+      return String(id).slice(0, 4) + '…' + String(id).slice(-3);
+    }
+
+    function updateTargetOptions(state) {
+      const clients = state && state.clients ? state.clients : {};
+      const ids = Object.keys(clients);
+
+      // Keep current selection if possible
+      const current = targetEl.value;
+
+      // Build option list: Auto + active clients (those with lat/lon)
+      const opts = [];
+      opts.push({ value: '', label: 'Auto (first active player)' });
+
+      for (const id of ids) {
+        const c = clients[id] || {};
+        const active = Number.isFinite(c.lat) && Number.isFinite(c.lon);
+        const label = active ? `${shortId(id)} (active)` : `${shortId(id)} (no GPS yet)`;
+        opts.push({ value: id, label });
+      }
+
+      // Replace options
+      targetEl.innerHTML = '';
+      for (const o of opts) {
+        const opt = document.createElement('option');
+        opt.value = o.value;
+        opt.textContent = o.label;
+        targetEl.appendChild(opt);
+      }
+
+      // Restore selection if still present, else keep Auto
+      if (current && ids.includes(current)) targetEl.value = current;
+      else targetEl.value = '';
+    }
+
+    socket.on('worldState', (state) => {
+      updateTargetOptions(state);
+    });
+
+    socket.on('spawnCirclesResult', (r) => {
+      if (!r || typeof r !== 'object') return;
+      const who = r.targetId ? shortId(r.targetId) : 'auto';
+      const posNote = r.hasTargetPos ? 'near player' : 'at origin (target has no GPS yet)';
+      status.textContent = `Spawned ${r.added || 0} circles ${posNote} (${who})`;
+    });
+
+
     document.getElementById('spawn').addEventListener('click', () => {
-      socket.emit('spawnCircles', { count: Number(countEl.value), radius: Number(radiusEl.value) });
+      socket.emit('spawnCircles', { count: Number(countEl.value), radius: Number(radiusEl.value), targetId: targetEl.value || null });
       status.textContent = 'Spawn requested';
     });
 

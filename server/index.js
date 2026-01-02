@@ -214,28 +214,48 @@ io.on("connection", (socket) => {
   });
 
   // Debug toy: spawn "proto grass circles" around the requesting player
-  socket.on("spawnCircles", ({ count, radius } = {}) => {
-    const c = clients[socket.id];
+  socket.on("spawnCircles", ({ count, radius, targetId } = {}) => {
     const n = Math.max(1, Math.min(400, Number(count) || 60));
     const r = Math.max(1, Math.min(350, Number(radius) || 80));
 
+    // Choose which player's position to spawn around.
+    // If you open /circles on a laptop while playing on a phone, pick the phone's socket id here.
+    const target = (targetId && clients[targetId]) ? clients[targetId] : clients[socket.id];
+
     let cx = 0, cz = 0;
-    if (c && Number.isFinite(c.lat) && Number.isFinite(c.lon) && worldOrigin) {
-      const p = latLonToXZ(c.lat, c.lon);
+    let usedTargetId = (targetId && clients[targetId]) ? targetId : socket.id;
+    let hasTargetPos = false;
+
+    if (target && Number.isFinite(target.lat) && Number.isFinite(target.lon) && worldOrigin) {
+      const p = latLonToXZ(target.lat, target.lon);
       cx = p.x; cz = p.z;
+      hasTargetPos = true;
     }
 
+    const added = [];
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
       const d = Math.sqrt(Math.random()) * r;
       const x = cx + Math.cos(a) * d;
       const z = cz + Math.sin(a) * d;
       const scale = 0.6 + Math.random() * 1.8;
-      circles.push({ id: nextCircleId++, x, z, scale });
+      const obj = { id: nextCircleId++, x, z, scale };
+      circles.push(obj);
+      added.push(obj);
     }
+
+    // Give immediate feedback to the requester (useful on /circles page)
+    socket.emit("spawnCirclesResult", {
+      ok: true,
+      targetId: usedTargetId,
+      hasTargetPos,
+      center: { x: cx, z: cz },
+      added: added.length
+    });
 
     scheduleWorldStateEmit();
   });
+
 
   socket.on("clearCircles", () => {
     circles.length = 0;
