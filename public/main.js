@@ -82,6 +82,14 @@ function ensureSelectionUI() {
 
 // --- Babylon ---
 const { engine, scene } = initScene(canvas);
+
+// --- Simple background (no atmosphere) ---
+scene.clearColor = new BABYLON.Color4(0.65, 0.65, 0.68, 1.0); // grey sky
+if (!scene.lights || scene.lights.length === 0) {
+  const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
+  hemi.intensity = 1.0;
+}
+
 const camera = initCamera(scene, canvas);
 
 
@@ -478,6 +486,22 @@ const socket = io({
 // --- Constants ---
 const PLAYER_CUBE_Y  = -5;   // below camera
 const DROPPED_CUBE_Y = -1;   // "ground-ish"
+
+// --- Simple ground (white) ---
+const ground = BABYLON.MeshBuilder.CreateGround(
+  "ground",
+  { width: 4000, height: 4000, subdivisions: 2 },
+  scene
+);
+ground.isPickable = false;
+ground.position.y = DROPPED_CUBE_Y - 1.05;
+
+const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
+groundMat.diffuseColor = new BABYLON.Color3(0.95, 0.95, 0.95); // white-ish
+groundMat.emissiveColor = new BABYLON.Color3(0.08, 0.08, 0.08); // gentle lift so it's never pitch black
+groundMat.specularColor = BABYLON.Color3.Black();
+ground.material = groundMat;
+
 const PLAYER_POINTER_Y_OFFSET = 1.6; // raise player pointer above dropped cubes
 const REMOTE_SPHERE_Y_OFFSET = 10;
 
