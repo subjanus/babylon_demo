@@ -375,7 +375,7 @@ function setSelection(mesh) {
   selectedLon = (typeof md.lon === "number") ? md.lon : null;
 
   if (selectedKind === "droppedCube") selectedLabel = `Cube #${selectedId}`;
-  else if (selectedKind === "playerPointer") selectedLabel = `Player ${shortId(String(selectedId || ""))}`;
+  else if (selectedKind === "playerCube" || selectedKind === "playerSphere") selectedLabel = `Player ${shortId(String(selectedId || ""))}`;
   else selectedLabel = String(md.kind);
 
   updateSelectionHUD();
@@ -481,6 +481,160 @@ const DROPPED_CUBE_Y = -1;   // "ground-ish"
 const PLAYER_POINTER_Y_OFFSET = 1.6; // raise player pointer above dropped cubes
 const REMOTE_SPHERE_Y_OFFSET = 10;
 
+
+// --- Atmosphere (Misty Quest) ---
+// Goal: cool mist hugging the ground, warm angled sun, soft shadows, and distance haze.
+
+// Sky fill (soft ambient lift)
+const skyFill = new BABYLON.HemisphericLight("skyFill", new BABYLON.Vector3(0, 1, 0), scene);
+skyFill.intensity = 0.55;
+skyFill.diffuse = new BABYLON.Color3(0.78, 0.86, 0.95);
+skyFill.groundColor = new BABYLON.Color3(0.12, 0.14, 0.18);
+skyFill.specular = new BABYLON.Color3(0, 0, 0);
+
+// Sun (warm, angled)
+const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.55, -1.0, 0.35), scene);
+sun.position = new BABYLON.Vector3(140, 260, -180);
+sun.intensity = 1.15;
+sun.diffuse = new BABYLON.Color3(1.0, 0.92, 0.80);
+sun.specular = new BABYLON.Color3(0.20, 0.20, 0.20);
+
+// Soft shadows
+const shadowGen = new BABYLON.ShadowGenerator(2048, sun);
+shadowGen.useBlurExponentialShadowMap = true;
+shadowGen.blurKernel = 16;
+shadowGen.bias = 0.0015;
+shadowGen.normalBias = 0.02;
+
+function castShadow(mesh) {
+  if (!mesh) return;
+  try { shadowGen.addShadowCaster(mesh, true); } catch (_) {}
+}
+
+// Ground plane (slightly below dropped cubes so it never z-fights)
+const ground = BABYLON.MeshBuilder.CreateGround("ground", { width: 4000, height: 4000 }, scene);
+ground.parent = worldRoot;
+ground.position.y = DROPPED_CUBE_Y - 1.05;
+ground.isPickable = false;
+ground.receiveShadows = true;
+
+const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
+groundMat.diffuseColor = new BABYLON.Color3(0.40, 0.43, 0.48); // brighter base
+groundMat.emissiveColor = new BABYLON.Color3(0.06, 0.07, 0.08); // subtle lift
+groundMat.specularColor = BABYLON.Color3.Black();
+groundMat.alpha = 0.92; // a little airy
+ground.material = groundMat;
+
+// Distance haze
+scene.fogMode = BABYLON.Scene.FOGMODE_EXP2;
+scene.fogDensity = 0.015;
+scene.fogColor = new BABYLON.Color3(0.80, 0.86, 0.92);
+scene.clearColor = new BABYLON.Color4(0.72, 0.80, 0.90, 1.0);
+
+// Film-ish grading (subtle)
+scene.imageProcessingConfiguration.toneMappingEnabled = true;
+scene.imageProcessingConfiguration.exposure = 1.15;
+scene.imageProcessingConfiguration.contrast = 1.05;
+
+// Ground mist (particles that follow the camera so it feels infinite)
+function makeMistTexture() {
+  const tex = new BABYLON.DynamicTexture("mistTex", { width: 64, height: 64 }, scene, true);
+  const ctx = tex.getContext();
+  const w = 64, h = 64;
+  const g = ctx.createRadialGradient(w/2, h/2, 4, w/2, h/2, w/2);
+  g.addColorStop(0.0, "rgba(255,255,255,0.45)");
+  g.addColorStop(0.35, "rgba(255,255,255,0.22)");
+  g.addColorStop(1.0, "rgba(255,255,255,0.0)");
+  ctx.clearRect(0,0,w,h);
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,w,h);
+  tex.update();
+  return tex;
+}
+
+const mistSystem = new BABYLON.ParticleSystem("groundMist", 2200, scene);
+mistSystem.particleTexture = makeMistTexture();
+mistSystem.blendMode = BABYLON.ParticleSystem.BLENDMODE_STANDARD;
+
+mistSystem.minSize = 2.5;
+mistSystem.maxSize = 7.5;
+mistSystem.minLifeTime = 3.0;
+mistSystem.maxLifeTime = 6.0;
+
+mistSystem.emitRate = 140;
+mistSystem.minEmitPower = 0.05;
+mistSystem.maxEmitPower = 0.12;
+
+mistSystem.color1 = new BABYLON.Color4(0.90, 0.95, 1.00, 0.10);
+mistSystem.color2 = new BABYLON.Color4(0.85, 0.92, 1.00, 0.06);
+mistSystem.colorDead = new BABYLON.Color4(0.85, 0.92, 1.00, 0.0);
+
+// A wide, low box emitter — we keep it centered on camera each frame
+mistSystem.minEmitBox = new BABYLON.Vector3(-24, 0, -24);
+mistSystem.maxEmitBox = new BABYLON.Vector3(24, 0.4, 24);
+
+// Mostly horizontal drift
+mistSystem.direction1 = new BABYLON.Vector3(-0.08, 0.01, -0.08);
+mistSystem.direction2 = new BABYLON.Vector3(0.08, 0.02, 0.08);
+
+mistSystem.gravity = new BABYLON.Vector3(0, -0.003, 0);
+mistSystem.updateSpeed = 0.015;
+mistSystem.start();
+
+// God rays (subtle) — guarded so it won't crash if unsupported
+let sunBillboard = null;
+let godrays = null;
+
+try {
+  sunBillboard = BABYLON.MeshBuilder.CreatePlane("sunBillboard", { size: 18 }, scene);
+  sunBillboard.isPickable = false;
+  sunBillboard.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+
+  const sunMat = new BABYLON.StandardMaterial("sunBillboardMat", scene);
+  sunMat.emissiveColor = new BABYLON.Color3(1.0, 0.90, 0.72);
+  sunMat.disableLighting = true;
+  sunMat.alpha = 0.9;
+  sunBillboard.material = sunMat;
+
+  godrays = new BABYLON.VolumetricLightScatteringPostProcess(
+    "godrays",
+    0.6,
+    camera,
+    sunBillboard,
+    80,
+    BABYLON.Texture.BILINEAR_SAMPLINGMODE,
+    engine,
+    false
+  );
+  godrays.exposure = 0.23;
+  godrays.decay = 0.96;
+  godrays.weight = 0.65;
+  godrays.density = 0.85;
+} catch (e) {
+  console.warn("God rays unavailable:", e);
+}
+
+// Keep mist + sun billboard positioned relative to the active camera
+function updateAtmosphere() {
+  const camPos = scene.activeCamera?.globalPosition || scene.activeCamera?.position;
+  if (camPos) {
+    // Mist: centered on camera, hugging ground
+    mistSystem.emitter = new BABYLON.Vector3(camPos.x, DROPPED_CUBE_Y + 0.2, camPos.z);
+
+    // "Breathing" mist
+    const t = performance.now() * 0.001;
+    mistSystem.emitRate = 120 + Math.sin(t * 0.6) * 40;
+
+    // Sun billboard far in the sky opposite the light direction
+    if (sunBillboard) {
+      const sunDir = sun.direction.normalize();
+      const sunPosDir = sunDir.scale(-1);
+      const target = new BABYLON.Vector3(camPos.x, camPos.y, camPos.z).add(sunPosDir.scale(500));
+      sunBillboard.position.copyFrom(target);
+    }
+  }
+}
+
 const GPS_ALPHA = 0.12;      // smoothing strength (0..1). Higher = more responsive, more jitter.
 const DEAD_BAND_M = 1.8;     // ignore smaller movements (meters)
 const SEND_MIN_MS = 350;     // throttle outgoing gps updates
@@ -489,102 +643,6 @@ const YAW_ALPHA = 0.08;      // heading smoothing if Lock North is enabled
 
 // Telemetry throttling
 const TELEMETRY_MIN_MS = 500;
-
-
-// --- Environment ---
-function initEnvironment() {
-  // Background
-  scene.clearColor = new BABYLON.Color4(0.04, 0.06, 0.09, 1);
-
-  // Distance haze
-  scene.fogMode = BABYLON.Scene.FOGMODE_EXP2;
-  scene.fogDensity = 0.006;
-  scene.fogColor = new BABYLON.Color3(0.04, 0.06, 0.09);
-
-  // Sunlight (directional) + soft ambient fill
-  const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.35, -1.0, 0.25), scene);
-  sun.position = new BABYLON.Vector3(120, 260, -120);
-  sun.intensity = 1.25;
-  sun.diffuse = new BABYLON.Color3(1.0, 0.98, 0.92);
-  sun.specular = new BABYLON.Color3(1.0, 1.0, 1.0);
-
-  const skyFill = new BABYLON.HemisphericLight("skyFill", new BABYLON.Vector3(0, 1, 0), scene);
-  skyFill.intensity = 0.35;
-  skyFill.diffuse = new BABYLON.Color3(0.65, 0.72, 0.85);
-  skyFill.groundColor = new BABYLON.Color3(0.10, 0.10, 0.12);
-
-  // A big ground plane at "ground level" (visual + soft constraint)
-  const ground = BABYLON.MeshBuilder.CreateGround(
-    'groundPlane',
-    { width: 2500, height: 2500, subdivisions: 2 },
-    scene
-  );
-  // Dropped cubes are size 2 and centered at DROPPED_CUBE_Y, so their bottoms are at (DROPPED_CUBE_Y - 1).
-  // Put the ground plane slightly below the cube bottoms to avoid z-fighting.
-  ground.position.y = DROPPED_CUBE_Y - 1.05;
-
-  const gmat = new BABYLON.StandardMaterial('groundMat', scene);
-  gmat.diffuseColor = new BABYLON.Color3(0.14, 0.16, 0.19);
-  gmat.specularColor = BABYLON.Color3.Black();
-  gmat.alpha = 0.92;
-  ground.material = gmat;
-  ground.isPickable = false;
-
-  // Ground mist (local, around the camera)
-  const smokeTex = (() => {
-    const c = document.createElement('canvas');
-    c.width = 64; c.height = 64;
-    const ctx = c.getContext('2d');
-    const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
-    g.addColorStop(0.0, 'rgba(255,255,255,0.55)');
-    g.addColorStop(0.5, 'rgba(255,255,255,0.16)');
-    g.addColorStop(1.0, 'rgba(255,255,255,0.0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, 64, 64);
-    return new BABYLON.Texture(c.toDataURL('image/png'), scene, true, false);
-  })();
-
-  const mist = new BABYLON.ParticleSystem('groundMist', 1400, scene);
-  mist.particleTexture = smokeTex;
-  mist.minSize = 1.6;
-  mist.maxSize = 5.0;
-  mist.minLifeTime = 2.8;
-  mist.maxLifeTime = 6.5;
-  mist.emitRate = 220;
-  mist.blendMode = BABYLON.ParticleSystem.BLENDMODE_STANDARD;
-
-  mist.color1 = new BABYLON.Color4(0.85, 0.92, 1.0, 0.10);
-  mist.color2 = new BABYLON.Color4(0.85, 0.92, 1.0, 0.02);
-  mist.colorDead = new BABYLON.Color4(0, 0, 0, 0);
-
-  mist.gravity = new BABYLON.Vector3(0, 0, 0);
-  mist.direction1 = new BABYLON.Vector3(-0.05, 0.02, -0.05);
-  mist.direction2 = new BABYLON.Vector3( 0.05, 0.05,  0.05);
-  mist.minEmitPower = 0.3;
-  mist.maxEmitPower = 0.9;
-  mist.updateSpeed = 0.01;
-
-  // Emit from a box centered on the camera (which is typically at x=z=0)
-  mist.emitter = new BABYLON.Vector3(0, DROPPED_CUBE_Y + 0.1, 0);
-  mist.createBoxEmitter(
-    new BABYLON.Vector3(-35, 0, -35),
-    new BABYLON.Vector3( 35, 0.6, 35),
-    new BABYLON.Vector3(-0.05, 0.02, -0.05),
-    new BABYLON.Vector3( 0.05, 0.05,  0.05),
-    0.3,
-    0.9
-  );
-  mist.start();
-
-  // Soft floor: keep the camera from dipping under the ground.
-  scene.onBeforeRenderObservable.add(() => {
-    if (camera.position.y < 0.6) camera.position.y = 0.6;
-
-    // Keep mist centered on the camera's X/Z.
-    mist.emitter.x = camera.position.x;
-    mist.emitter.z = camera.position.z;
-  });
-}
 
 // --- State ---
 let worldOrigin = null;      // {lat, lon} from server
@@ -608,12 +666,9 @@ const YAW_SEND_MIN_DELTA = 0.03; // ~1.7 degrees
 // Telemetry timing
 let lastTelemAt = 0;
 
-initEnvironment();
-
 // Entities
 const playerPointers = {}; // socketId -> pointer mesh (pyramid)
 const droppedCubes = {};  // blockId -> cube mesh
-const protoCircles = {};  // circleId -> circle mesh
 
 // --- Helpers ---
 function shortId(id){ return (id||'').slice(-4); }
@@ -670,54 +725,27 @@ function ensurePlayerPointer(id, color) {
   // Point forward along +Z (cone axis is Y)
   p.rotation.x = Math.PI / 2;
 
+  castShadow(p);
+
   playerPointers[id] = p;
   return p;
 }
 
 function ensureDroppedCube(blockId, color) {
   if (!droppedCubes[blockId]) {
-    const cube = BABYLON.MeshBuilder.CreateBox(`droppedCube_${blockId}`, { size: 2 }, scene);
-
-    const mat = new BABYLON.StandardMaterial(`droppedCubeMat_${blockId}`, scene);
-    mat.diffuseColor = BABYLON.Color3.FromHexString(color || "#00A3FF");
-    mat.specularColor = BABYLON.Color3.Black();
-    cube.material = mat;
-
+    const cube = initBox(scene, color);
+    cube.name = `droppedCube_${blockId}`;
     cube.parent = worldRoot;
     cube.isPickable = true;
-    cube.metadata = { kind: "droppedCube", blockId: blockId };
+    cube.metadata = { kind: "droppedCube", blockId };
+
+    castShadow(cube);
 
     droppedCubes[blockId] = cube;
   }
   return droppedCubes[blockId];
 }
 
-function ensureCircle(circleId, scale = 1) {
-  if (protoCircles[circleId]) return protoCircles[circleId];
-
-  // Thin disc on the ground (proto-grass)
-  const disc = BABYLON.MeshBuilder.CreateCylinder(
-    `circle_${circleId}`,
-    { diameter: 1.2, height: 0.08, tessellation: 36 },
-    scene
-  );
-
-  const mat = new BABYLON.StandardMaterial(`circleMat_${circleId}`, scene);
-  mat.diffuseColor = new BABYLON.Color3(0.10, 0.55, 0.20);
-  mat.emissiveColor = new BABYLON.Color3(0.02, 0.12, 0.04);
-  mat.specularColor = BABYLON.Color3.Black();
-  mat.alpha = 0.85;
-  disc.material = mat;
-
-  disc.parent = worldRoot;
-  disc.isPickable = false;
-  disc.metadata = { kind: "protoCircle", circleId };
-
-  disc.scaling.set(scale, 1, scale);
-
-  protoCircles[circleId] = disc;
-  return disc;
-}
 
 // Extract yaw from camera quaternion (radians)
 function getCameraYawRad() {
@@ -956,24 +984,6 @@ function reconcileWorld(state) {
     cube.metadata = { ...(cube.metadata || {}), lat: b.lat, lon: b.lon, kind: "droppedCube", blockId: b.id };
   }
 
-  // Proto circles (debug grass)
-  const presentCircles = new Set();
-  for (const c of (state.circles || [])) {
-    if (!isNumber(c.id) || !isNumber(c.x) || !isNumber(c.z)) continue;
-    presentCircles.add(String(c.id));
-
-    const disc = ensureCircle(c.id, isNumber(c.scale) ? c.scale : 1);
-    disc.position.set(c.x, DROPPED_CUBE_Y + 0.04, c.z);
-  }
-
-  for (const id of Object.keys(protoCircles)) {
-    if (!presentCircles.has(String(id))) {
-      protoCircles[id].dispose();
-      delete protoCircles[id];
-    }
-  }
-
-
   // Remove deleted dropped cubes (works even when droppedBlocks is empty)
   for (const id of Object.keys(droppedCubes)) {
     if (!presentBlocks.has(String(id))) {
@@ -1007,11 +1017,19 @@ socket.on("myCounters", (c) => {
 });
 
 socket.on("deleteResult", (r) => {
+  // Quick feedback so you can tell if the server accepted the delete
   if (!r || typeof r !== "object") return;
   if (r.ok) {
     setUIStatus(`Connected (${shortId(socket.id)}) | Deleted cube #${r.blockId}`);
+    if (r.actionCounters && lastWorldState) {
+      setUICounts(Object.keys(lastWorldState.clients || {}).length, (lastWorldState.droppedBlocks || []).length, r.actionCounters.deletedCubes || 0);
+    }
   } else {
-    setUIStatus(`Connected (${shortId(socket.id)}) | Delete failed: ${r.reason || 'rejected'}`);
+    const reason = r.reason || "rejected";
+    setUIStatus(`Connected (${shortId(socket.id)}) | Delete failed: ${reason}`);
+    if (r.actionCounters && lastWorldState) {
+      setUICounts(Object.keys(lastWorldState.clients || {}).length, (lastWorldState.droppedBlocks || []).length, r.actionCounters.deletedCubes || 0);
+    }
   }
 });
 
@@ -1032,6 +1050,7 @@ socket.on("worldState", (state) => {
 engine.runRenderLoop(() => {
   applyHeadingStabilization();
   maybeSendOrientationUpdate();
+  updateAtmosphere();
   updateSelectionHUD();
   scene.render();
 });
