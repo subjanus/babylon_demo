@@ -82,14 +82,6 @@ function ensureSelectionUI() {
 
 // --- Babylon ---
 const { engine, scene } = initScene(canvas);
-
-// --- Simple background (no atmosphere) ---
-scene.clearColor = new BABYLON.Color4(0.65, 0.65, 0.68, 1.0); // grey sky
-if (!scene.lights || scene.lights.length === 0) {
-  const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
-  hemi.intensity = 1.0;
-}
-
 const camera = initCamera(scene, canvas);
 
 
@@ -383,7 +375,7 @@ function setSelection(mesh) {
   selectedLon = (typeof md.lon === "number") ? md.lon : null;
 
   if (selectedKind === "droppedCube") selectedLabel = `Cube #${selectedId}`;
-  else if (selectedKind === "playerPointer") selectedLabel = `Player ${shortId(String(selectedId || ""))}`;
+  else if (selectedKind === "playerCube" || selectedKind === "playerSphere") selectedLabel = `Player ${shortId(String(selectedId || ""))}`;
   else selectedLabel = String(md.kind);
 
   updateSelectionHUD();
@@ -486,22 +478,6 @@ const socket = io({
 // --- Constants ---
 const PLAYER_CUBE_Y  = -5;   // below camera
 const DROPPED_CUBE_Y = -1;   // "ground-ish"
-
-// --- Simple ground (white) ---
-const ground = BABYLON.MeshBuilder.CreateGround(
-  "ground",
-  { width: 4000, height: 4000, subdivisions: 2 },
-  scene
-);
-ground.isPickable = false;
-ground.position.y = DROPPED_CUBE_Y - 1.05;
-
-const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
-groundMat.diffuseColor = new BABYLON.Color3(0.95, 0.95, 0.95); // white-ish
-groundMat.emissiveColor = new BABYLON.Color3(0.08, 0.08, 0.08); // gentle lift so it's never pitch black
-groundMat.specularColor = BABYLON.Color3.Black();
-ground.material = groundMat;
-
 const PLAYER_POINTER_Y_OFFSET = 1.6; // raise player pointer above dropped cubes
 const REMOTE_SPHERE_Y_OFFSET = 10;
 
@@ -513,12 +489,6 @@ const YAW_ALPHA = 0.08;      // heading smoothing if Lock North is enabled
 
 // Telemetry throttling
 const TELEMETRY_MIN_MS = 500;
-
-
-// --- Environment (disabled) ---
-// Environment features (fog, mist, ground plane, camera floor clamp) are disabled for full visibility.
-scene.fogMode = BABYLON.Scene.FOGMODE_NONE;
-scene.clearColor = new BABYLON.Color4(0.02, 0.03, 0.05, 1);
 
 // --- State ---
 let worldOrigin = null;      // {lat, lon} from server
@@ -542,11 +512,9 @@ const YAW_SEND_MIN_DELTA = 0.03; // ~1.7 degrees
 // Telemetry timing
 let lastTelemAt = 0;
 
-
 // Entities
 const playerPointers = {}; // socketId -> pointer mesh (pyramid)
 const droppedCubes = {};  // blockId -> cube mesh
-const protoCircles = {};  // circleId -> circle mesh
 
 // --- Helpers ---
 function shortId(id){ return (id||'').slice(-4); }
@@ -609,47 +577,14 @@ function ensurePlayerPointer(id, color) {
 
 function ensureDroppedCube(blockId, color) {
   if (!droppedCubes[blockId]) {
-    const cube = BABYLON.MeshBuilder.CreateBox(`droppedCube_${blockId}`, { size: 2 }, scene);
-
-    const mat = new BABYLON.StandardMaterial(`droppedCubeMat_${blockId}`, scene);
-    mat.diffuseColor = BABYLON.Color3.FromHexString(color || "#00A3FF");
-    mat.specularColor = BABYLON.Color3.Black();
-    cube.material = mat;
-
+    const cube = initBox(scene, color);
+    cube.name = `droppedCube_${blockId}`;
     cube.parent = worldRoot;
-    cube.isPickable = true;
-    cube.metadata = { kind: "droppedCube", blockId: blockId };
-
-    droppedCubes[blockId] = cube;
+      cube.isPickable = true;
+  cube.metadata = { kind: "droppedCube", blockId: blockId };
+droppedCubes[blockId] = cube;
   }
   return droppedCubes[blockId];
-}
-
-function ensureCircle(circleId, scale = 1) {
-  if (protoCircles[circleId]) return protoCircles[circleId];
-
-  // Thin disc on the ground (proto-grass)
-  const disc = BABYLON.MeshBuilder.CreateCylinder(
-    `circle_${circleId}`,
-    { diameter: 1.2, height: 0.08, tessellation: 36 },
-    scene
-  );
-
-  const mat = new BABYLON.StandardMaterial(`circleMat_${circleId}`, scene);
-  mat.diffuseColor = new BABYLON.Color3(0.10, 0.55, 0.20);
-  mat.emissiveColor = new BABYLON.Color3(0.02, 0.12, 0.04);
-  mat.specularColor = BABYLON.Color3.Black();
-  mat.alpha = 0.85;
-  disc.material = mat;
-
-  disc.parent = worldRoot;
-  disc.isPickable = false;
-  disc.metadata = { kind: "protoCircle", circleId };
-
-  disc.scaling.set(scale, 1, scale);
-
-  protoCircles[circleId] = disc;
-  return disc;
 }
 
 // Extract yaw from camera quaternion (radians)
@@ -841,6 +776,17 @@ function reconcileWorld(state) {
   const clientIds = Object.keys(state.clients || {});
   const blockCount = (state.droppedBlocks || []).length;
 
+
+// Centering: when Follow is ON, treat the local player as the origin (0,0) in world space.
+// This avoids the "fish bowl" effect when Lock North rotates the world.
+let centerX = 0, centerZ = 0;
+if (followMe && socket.id && state.clients && state.clients[socket.id] && typeof state.clients[socket.id].lat === 'number' && typeof state.clients[socket.id].lon === 'number') {
+  const meC = state.clients[socket.id];
+  const p = latLonToXZ(meC.lat, meC.lon);
+  centerX = p.x;
+  centerZ = p.z;
+}
+
   setUIStatus(`Connected (${shortId(socket.id)})`);
   setUICounts(clientIds.length, blockCount, myDeletedCount);
 
@@ -850,7 +796,7 @@ function reconcileWorld(state) {
 
     if (isNumber(c.lat) && isNumber(c.lon)) {
       const { x, z } = latLonToXZ(c.lat, c.lon);
-      ptr.position.set(x, DROPPED_CUBE_Y + PLAYER_POINTER_Y_OFFSET, z);
+      ptr.position.set(x - centerX, DROPPED_CUBE_Y + PLAYER_POINTER_Y_OFFSET, z - centerZ);
       ptr.metadata = { ...(ptr.metadata || {}), lat: c.lat, lon: c.lon, kind: "playerPointer", socketId: id };
     }
 
@@ -870,12 +816,14 @@ function reconcileWorld(state) {
     }
   }
 
-  // Follow mode: translate the world so the local player's cube stays centered under the camera.
-  if (followMe && socket.id && playerPointers[socket.id]) {
-    const me = playerPointers[socket.id];
-    worldRoot.position.x = -me.position.x;
-    worldRoot.position.z = -me.position.z;
-  }
+  // Follow mode is handled by centering positions in reconcileWorld (no worldRoot translation).
+
+
+
+  // Keep root translation neutral; centering happens via per-mesh offsets.
+  worldRoot.position.x = 0;
+  worldRoot.position.z = 0;
+
 
   // Dropped cubes (create/update)
   const presentBlocks = new Set();
@@ -885,27 +833,9 @@ function reconcileWorld(state) {
 
     const cube = ensureDroppedCube(b.id, b.color);
     const { x, z } = latLonToXZ(b.lat, b.lon);
-    cube.position.set(x, DROPPED_CUBE_Y, z);
+    cube.position.set(x - centerX, DROPPED_CUBE_Y, z - centerZ);
     cube.metadata = { ...(cube.metadata || {}), lat: b.lat, lon: b.lon, kind: "droppedCube", blockId: b.id };
   }
-
-  // Proto circles (debug grass)
-  const presentCircles = new Set();
-  for (const c of (state.circles || [])) {
-    if (!isNumber(c.id) || !isNumber(c.x) || !isNumber(c.z)) continue;
-    presentCircles.add(String(c.id));
-
-    const disc = ensureCircle(c.id, isNumber(c.scale) ? c.scale : 1);
-    disc.position.set(c.x, DROPPED_CUBE_Y + 0.04, c.z);
-  }
-
-  for (const id of Object.keys(protoCircles)) {
-    if (!presentCircles.has(String(id))) {
-      protoCircles[id].dispose();
-      delete protoCircles[id];
-    }
-  }
-
 
   // Remove deleted dropped cubes (works even when droppedBlocks is empty)
   for (const id of Object.keys(droppedCubes)) {
@@ -940,11 +870,19 @@ socket.on("myCounters", (c) => {
 });
 
 socket.on("deleteResult", (r) => {
+  // Quick feedback so you can tell if the server accepted the delete
   if (!r || typeof r !== "object") return;
   if (r.ok) {
     setUIStatus(`Connected (${shortId(socket.id)}) | Deleted cube #${r.blockId}`);
+    if (r.actionCounters && lastWorldState) {
+      setUICounts(Object.keys(lastWorldState.clients || {}).length, (lastWorldState.droppedBlocks || []).length, r.actionCounters.deletedCubes || 0);
+    }
   } else {
-    setUIStatus(`Connected (${shortId(socket.id)}) | Delete failed: ${r.reason || 'rejected'}`);
+    const reason = r.reason || "rejected";
+    setUIStatus(`Connected (${shortId(socket.id)}) | Delete failed: ${reason}`);
+    if (r.actionCounters && lastWorldState) {
+      setUICounts(Object.keys(lastWorldState.clients || {}).length, (lastWorldState.droppedBlocks || []).length, r.actionCounters.deletedCubes || 0);
+    }
   }
 });
 
