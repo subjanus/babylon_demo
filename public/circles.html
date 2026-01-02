@@ -32,6 +32,7 @@
       <div class="muted" style="margin-bottom:6px;">Spawn around player:</div>
       <select id="target" style="width:100%; background:#111827; color:#e6edf3; border:1px solid #374151; border-radius:14px; padding:12px 12px; font-size:14px;">
         <option value="">Auto (first active player)</option>
+        <option value="*">All active players</option>
       </select>
       <div class="muted" style="margin-top:6px;">Tip: if you opened this page on a laptop, pick your phone’s socket id here.</div>
     </div>
@@ -76,9 +77,10 @@
       // Keep current selection if possible
       const current = targetEl.value;
 
-      // Build option list: Auto + active clients (those with lat/lon)
+      // Build option list: Auto + All active + client list
       const opts = [];
       opts.push({ value: '', label: 'Auto (first active player)' });
+      opts.push({ value: '*', label: 'All active players' });
 
       for (const id of ids) {
         const c = clients[id] || {};
@@ -97,7 +99,8 @@
       }
 
       // Restore selection if still present, else keep Auto
-      if (current && ids.includes(current)) targetEl.value = current;
+      if (current === '*') targetEl.value = '*';
+      else if (current && ids.includes(current)) targetEl.value = current;
       else targetEl.value = '';
     }
 
@@ -107,14 +110,15 @@
 
     socket.on('spawnCirclesResult', (r) => {
       if (!r || typeof r !== 'object') return;
-      const who = r.targetId ? shortId(r.targetId) : 'auto';
-      const posNote = r.hasTargetPos ? 'near player' : 'at origin (target has no GPS yet)';
-      status.textContent = `Spawned ${r.added || 0} circles ${posNote} (${who})`;
+      const targets = Array.isArray(r.targets) ? r.targets : [];
+      const label = targets.length === 0 ? 'auto' : (targets.length === 1 ? shortId(targets[0]) : `${targets.length} players`);
+      status.textContent = `Spawned ${r.totalAdded || 0} circles around ${label} (ids ${r.firstId || '?'}–${r.lastId || '?'})`;
     });
 
 
     document.getElementById('spawn').addEventListener('click', () => {
-      socket.emit('spawnCircles', { count: Number(countEl.value), radius: Number(radiusEl.value), targetId: targetEl.value || null });
+      const tid = targetEl.value;
+      socket.emit('spawnCircles', { count: Number(countEl.value), radius: Number(radiusEl.value), targetId: tid === '' ? null : tid });
       status.textContent = 'Spawn requested';
     });
 

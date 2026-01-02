@@ -213,44 +213,95 @@ io.on("connection", (socket) => {
     scheduleWorldStateEmit();
   });
 
-  // Debug toy: spawn "proto grass circles" around the requesting player
+  // Debug toy: spawn "proto grass circles" around a chosen player (or everyone)
+  // targetId behavior:
+  //   - "*"  => spawn around ALL active players (those with GPS)
+  //   - null/"" => auto-pick FIRST active player (phone), else fallback to requester
+  //   - socketId => spawn around that specific player
   socket.on("spawnCircles", ({ count, radius, targetId } = {}) => {
-    const n = Math.max(1, Math.min(400, Number(count) || 60));
+    const nRaw = Math.max(1, Math.min(400, Number(count) || 60));
     const r = Math.max(1, Math.min(350, Number(radius) || 80));
 
-    // Choose which player's position to spawn around.
-    // If you open /circles on a laptop while playing on a phone, pick the phone's socket id here.
-    const target = (targetId && clients[targetId]) ? clients[targetId] : clients[socket.id];
+    const activeIds = Object.keys(clients).filter((id) => {
+      const c = clients[id];
+      return c && Number.isFinite(c.lat) && Number.isFinite(c.lon);
+    });
 
-    let cx = 0, cz = 0;
-    let usedTargetId = (targetId && clients[targetId]) ? targetId : socket.id;
-    let hasTargetPos = false;
-
-    if (target && Number.isFinite(target.lat) && Number.isFinite(target.lon) && worldOrigin) {
-      const p = latLonToXZ(target.lat, target.lon);
-      cx = p.x; cz = p.z;
-      hasTargetPos = true;
+    let targets = [];
+    if (targetId === "*") {
+      targets = activeIds.slice();
+    } else if (targetId && clients[targetId]) {
+      targets = [targetId];
+    } else if (activeIds.length > 0) {
+      // Auto: pick the first active player (usually your phone)
+      targets = [activeIds[0]];
+    } else {
+      // Fallback: requester (may be origin if they have no GPS)
+      targets = [socket.id];
     }
 
-    const added = [];
-    for (let i = 0; i < n; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const d = Math.sqrt(Math.random()) * r;
-      const x = cx + Math.cos(a) * d;
-      const z = cz + Math.sin(a) * d;
-      const scale = 0.6 + Math.random() * 1.8;
-      const obj = { id: nextCircleId++, x, z, scale };
-      circles.push(obj);
-      added.push(obj);
+    // Cap total circles so "All" can't melt the server.
+    const TOTAL_CAP = 900;
+    const perTarget = Math.max(1, Math.floor(Math.min(nRaw, TOTAL_CAP) / Math.max(1, targets.length)));
+
+    let totalAdded = 0;
+    let firstId = null;
+    let lastId = null;
+
+    const centers = {}; // targetId -> { x, z, hasTargetPos }
+    for (const tid of targets) {
+      const t = clients[tid];
+      let cx = 0, cz = 0;
+      let hasTargetPos = false;
+
+      if (t && Number.isFinite(t.lat) && Number.isFinite(t.lon) && worldOrigin) {
+        const p = latLonToXZ(t.lat, t.lon);
+        cx = p.x; cz = p.z;
+        hasTargetPos = true;
+      }
+
+      centers[tid] = { x: cx, z: cz, hasTargetPos };
+
+      for (let i = 0; i < perTarget; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const d = Math.sqrt(Math.random()) * r;
+        const x = cx + Math.cos(a) * d;
+        const z = cz + Math.sin(a) * d;
+        const scale = 0.6 + Math.random() * 1.8;
+        const obj = { id: nextCircleId++, x, z, scale };
+        circles.push(obj);
+        totalAdded += 1;
+        if (firstId === null) firstId = obj.id;
+        lastId = obj.id;
+        if (circles.length > 5000) circles.shift(); // hard safety
+      }
     }
 
-    // Give immediate feedback to the requester (useful on /circles page)
+    // Log to telemetry so you can confirm it happened from /debug
+    pushTelemetry({
+      at: Date.now(),
+      socketId: socket.id,
+      kind: "spawnCircles",
+      extra: {
+        requested: { count: nRaw, radius: r, targetId: targetId ?? null },
+        targets,
+        perTarget,
+        totalAdded,
+        firstId,
+        lastId,
+        centers
+      }
+    });
+
+    // Immediate feedback for /circles
     socket.emit("spawnCirclesResult", {
       ok: true,
-      targetId: usedTargetId,
-      hasTargetPos,
-      center: { x: cx, z: cz },
-      added: added.length
+      targets,
+      perTarget,
+      totalAdded,
+      firstId,
+      lastId,
+      centers
     });
 
     scheduleWorldStateEmit();
