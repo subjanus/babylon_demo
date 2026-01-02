@@ -482,22 +482,23 @@ const PLAYER_POINTER_Y_OFFSET = 1.6; // raise player pointer above dropped cubes
 const REMOTE_SPHERE_Y_OFFSET = 10;
 
 
-// --- Atmosphere (Misty Quest) ---
+// --- Atmosphere (Swamp Noir) ---
+// Goal: thicker green-gray fog, darker ground, moody light beams, soft shadows, limited visibility.
 // Goal: cool mist hugging the ground, warm angled sun, soft shadows, and distance haze.
 
 // Sky fill (soft ambient lift)
 const skyFill = new BABYLON.HemisphericLight("skyFill", new BABYLON.Vector3(0, 1, 0), scene);
-skyFill.intensity = 0.55;
-skyFill.diffuse = new BABYLON.Color3(0.78, 0.86, 0.95);
-skyFill.groundColor = new BABYLON.Color3(0.12, 0.14, 0.18);
+skyFill.intensity = 0.38;
+skyFill.diffuse = new BABYLON.Color3(0.42, 0.50, 0.52);
+skyFill.groundColor = new BABYLON.Color3(0.06, 0.08, 0.07);
 skyFill.specular = new BABYLON.Color3(0, 0, 0);
 
 // Sun (warm, angled)
 const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.55, -1.0, 0.35), scene);
 sun.position = new BABYLON.Vector3(140, 260, -180);
-sun.intensity = 1.15;
-sun.diffuse = new BABYLON.Color3(1.0, 0.92, 0.80);
-sun.specular = new BABYLON.Color3(0.20, 0.20, 0.20);
+sun.intensity = 0.92;
+sun.diffuse = new BABYLON.Color3(0.98, 0.82, 0.58);
+sun.specular = new BABYLON.Color3(0.10, 0.10, 0.10);
 
 // Soft shadows
 const shadowGen = new BABYLON.ShadowGenerator(2048, sun);
@@ -519,22 +520,41 @@ ground.isPickable = false;
 ground.receiveShadows = true;
 
 const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
-groundMat.diffuseColor = new BABYLON.Color3(0.40, 0.43, 0.48); // brighter base
-groundMat.emissiveColor = new BABYLON.Color3(0.06, 0.07, 0.08); // subtle lift
+groundMat.diffuseColor = new BABYLON.Color3(0.14, 0.16, 0.14); // swampy base
+groundMat.emissiveColor = new BABYLON.Color3(0.01, 0.015, 0.012); // barely lifted
 groundMat.specularColor = BABYLON.Color3.Black();
-groundMat.alpha = 0.92; // a little airy
+groundMat.alpha = 0.98; // denser, less airy
 ground.material = groundMat;
 
 // Distance haze
 scene.fogMode = BABYLON.Scene.FOGMODE_EXP2;
-scene.fogDensity = 0.015;
-scene.fogColor = new BABYLON.Color3(0.80, 0.86, 0.92);
-scene.clearColor = new BABYLON.Color4(0.72, 0.80, 0.90, 1.0);
+scene.fogDensity = 0.030;
+scene.fogColor = new BABYLON.Color3(0.34, 0.40, 0.36);
+scene.clearColor = new BABYLON.Color4(0.08, 0.10, 0.10, 1.0);
 
 // Film-ish grading (subtle)
 scene.imageProcessingConfiguration.toneMappingEnabled = true;
-scene.imageProcessingConfiguration.exposure = 1.15;
-scene.imageProcessingConfiguration.contrast = 1.05;
+scene.imageProcessingConfiguration.exposure = 0.92;
+scene.imageProcessingConfiguration.contrast = 1.22;
+
+// Subtle noir polish: faint bloom + vignette (guarded for performance)
+try {
+  const pipeline = new BABYLON.DefaultRenderingPipeline("noirPipeline", true, scene, [camera]);
+  pipeline.fxaaEnabled = true;
+
+  pipeline.bloomEnabled = true;
+  pipeline.bloomWeight = 0.15;
+  pipeline.bloomKernel = 32;
+  pipeline.bloomThreshold = 0.88;
+  pipeline.bloomScale = 0.5;
+
+  pipeline.vignetteEnabled = true;
+  pipeline.vignetteWeight = 1.3;
+  pipeline.vignetteStretch = 0.2;
+  pipeline.vignetteColor = new BABYLON.Color4(0.02, 0.03, 0.03, 1);
+} catch (e) {
+  console.warn("Noir pipeline unavailable:", e);
+}
 
 // Ground mist (particles that follow the camera so it feels infinite)
 function makeMistTexture() {
@@ -556,18 +576,18 @@ const mistSystem = new BABYLON.ParticleSystem("groundMist", 2200, scene);
 mistSystem.particleTexture = makeMistTexture();
 mistSystem.blendMode = BABYLON.ParticleSystem.BLENDMODE_STANDARD;
 
-mistSystem.minSize = 2.5;
-mistSystem.maxSize = 7.5;
+mistSystem.minSize = 2.0;
+mistSystem.maxSize = 6.0;
 mistSystem.minLifeTime = 3.0;
 mistSystem.maxLifeTime = 6.0;
 
-mistSystem.emitRate = 140;
+mistSystem.emitRate = 170;
 mistSystem.minEmitPower = 0.05;
 mistSystem.maxEmitPower = 0.12;
 
-mistSystem.color1 = new BABYLON.Color4(0.90, 0.95, 1.00, 0.10);
-mistSystem.color2 = new BABYLON.Color4(0.85, 0.92, 1.00, 0.06);
-mistSystem.colorDead = new BABYLON.Color4(0.85, 0.92, 1.00, 0.0);
+mistSystem.color1 = new BABYLON.Color4(0.62, 0.70, 0.66, 0.12);
+mistSystem.color2 = new BABYLON.Color4(0.52, 0.60, 0.56, 0.08);
+mistSystem.colorDead = new BABYLON.Color4(0.52, 0.60, 0.56, 0.0);
 
 // A wide, low box emitter — we keep it centered on camera each frame
 mistSystem.minEmitBox = new BABYLON.Vector3(-24, 0, -24);
@@ -591,9 +611,9 @@ try {
   sunBillboard.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
 
   const sunMat = new BABYLON.StandardMaterial("sunBillboardMat", scene);
-  sunMat.emissiveColor = new BABYLON.Color3(1.0, 0.90, 0.72);
+  sunMat.emissiveColor = new BABYLON.Color3(0.90, 0.72, 0.48);
   sunMat.disableLighting = true;
-  sunMat.alpha = 0.9;
+  sunMat.alpha = 0.65;
   sunBillboard.material = sunMat;
 
   godrays = new BABYLON.VolumetricLightScatteringPostProcess(
@@ -606,10 +626,10 @@ try {
     engine,
     false
   );
-  godrays.exposure = 0.23;
+  godrays.exposure = 0.14;
   godrays.decay = 0.96;
-  godrays.weight = 0.65;
-  godrays.density = 0.85;
+  godrays.weight = 0.48;
+  godrays.density = 0.78;
 } catch (e) {
   console.warn("God rays unavailable:", e);
 }
@@ -623,7 +643,7 @@ function updateAtmosphere() {
 
     // "Breathing" mist
     const t = performance.now() * 0.001;
-    mistSystem.emitRate = 120 + Math.sin(t * 0.6) * 40;
+    mistSystem.emitRate = 150 + Math.sin(t * 0.55) * 55;
 
     // Sun billboard far in the sky opposite the light direction
     if (sunBillboard) {
