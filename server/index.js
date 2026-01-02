@@ -102,7 +102,7 @@ function scheduleWorldStateEmit() {
 io.on("connection", (socket) => {
   const color = pickColor();
 
-  clients[socket.id] = { lat: null, lon: null, yaw: 0, color };
+  clients[socket.id] = { lat: null, lon: null, yaw: 0, color, lastGpsAt: null };
   deletedCubesByClient[socket.id] = deletedCubesByClient[socket.id] || 0;
 
   socket.emit("myCounters", { deletedCubes: deletedCubesByClient[socket.id] });
@@ -137,6 +137,8 @@ io.on("connection", (socket) => {
 
     c.lat = la;
     c.lon = lo;
+
+    c.lastGpsAt = Date.now();
 
     scheduleWorldStateEmit();
   });
@@ -215,28 +217,42 @@ io.on("connection", (socket) => {
 
   // Debug toy: spawn "proto grass circles" around a chosen player (or everyone)
   // targetId behavior:
-  //   - "*"  => spawn around ALL active players (those with GPS)
+  //   - "*"  => spawn around ALL *fresh* GPS players (last sample within 15s); if none, fallback to any GPS
+  //   - "**" => spawn around ALL GPS players (even stale)
   //   - null/"" => auto-pick FIRST active player (phone), else fallback to requester
   //   - socketId => spawn around that specific player
   socket.on("spawnCircles", ({ count, radius, targetId } = {}) => {
     const nRaw = Math.max(1, Math.min(400, Number(count) || 60));
     const r = Math.max(1, Math.min(350, Number(radius) || 80));
 
-    const activeIds = Object.keys(clients).filter((id) => {
+    const now = Date.now();
+    const GPS_STALE_MS = 15000;
+
+    const gpsIdsAll = Object.keys(clients).filter((id) => {
       const c = clients[id];
       return c && Number.isFinite(c.lat) && Number.isFinite(c.lon);
     });
 
+    const activeFreshIds = gpsIdsAll.filter((id) => {
+      const c = clients[id];
+      return c && c.lastGpsAt && (now - c.lastGpsAt) <= GPS_STALE_MS;
+    });
+
     let targets = [];
     if (targetId === "*") {
-      targets = activeIds.slice();
+      targets = (activeFreshIds.length ? activeFreshIds : gpsIdsAll).slice();
+    } else if (targetId === "**") {
+      targets = (gpsIdsAll.length ? gpsIdsAll : activeFreshIds).slice();
     } else if (targetId && clients[targetId]) {
       targets = [targetId];
-    } else if (activeIds.length > 0) {
-      // Auto: pick the first active player (usually your phone)
-      targets = [activeIds[0]];
+    } else if (activeFreshIds.length > 0) {
+      // Auto: pick the first fresh-GPS player (usually your phone)
+      targets = [activeFreshIds[0]];
+    } else if (gpsIdsAll.length > 0) {
+      // Fallback: first GPS player, even if their last sample is stale
+      targets = [gpsIdsAll[0]];
     } else {
-      // Fallback: requester (may be origin if they have no GPS)
+      // Final fallback: requester (will be origin if they have no GPS)
       targets = [socket.id];
     }
 
@@ -284,6 +300,9 @@ io.on("connection", (socket) => {
       kind: "spawnCircles",
       extra: {
         requested: { count: nRaw, radius: r, targetId: targetId ?? null },
+        gpsIdsAllCount: gpsIdsAll.length,
+        activeFreshCount: activeFreshIds.length,
+        gpsStaleMs: GPS_STALE_MS,
         targets,
         perTarget,
         totalAdded,

@@ -32,9 +32,10 @@
       <div class="muted" style="margin-bottom:6px;">Spawn around player:</div>
       <select id="target" style="width:100%; background:#111827; color:#e6edf3; border:1px solid #374151; border-radius:14px; padding:12px 12px; font-size:14px;">
         <option value="">Auto (first active player)</option>
-        <option value="*">All active players</option>
+        <option value="*">All active players (fresh GPS)</option>
+        <option value="**">All GPS players (even stale)</option>
       </select>
-      <div class="muted" style="margin-top:6px;">Tip: if you opened this page on a laptop, pick your phone’s socket id here.</div>
+      <div class="muted" style="margin-top:6px;">Tip: on laptop, you’ll often show up as "no GPS" unless you allow location. Use "even stale" to include a player that stopped sending updates.</div>
     </div>
 </div>
 
@@ -77,15 +78,32 @@
       // Keep current selection if possible
       const current = targetEl.value;
 
-      // Build option list: Auto + All active + client list
+      // Build option list: Auto + target sets + client list
       const opts = [];
       opts.push({ value: '', label: 'Auto (first active player)' });
-      opts.push({ value: '*', label: 'All active players' });
+      opts.push({ value: '*', label: 'All active players (fresh GPS)' });
+      opts.push({ value: '**', label: 'All GPS players (even stale)' });
+
+      const now = Date.now();
+      const STALE_MS = 15000;
 
       for (const id of ids) {
         const c = clients[id] || {};
-        const active = Number.isFinite(c.lat) && Number.isFinite(c.lon);
-        const label = active ? `${shortId(id)} (active)` : `${shortId(id)} (no GPS yet)`;
+        const hasGps = Number.isFinite(c.lat) && Number.isFinite(c.lon);
+        const last = Number(c.lastGpsAt);
+        const ageMs = hasGps && Number.isFinite(last) ? (now - last) : null;
+        const isFresh = hasGps && ageMs !== null && ageMs <= STALE_MS;
+
+        let label;
+        if (isFresh) {
+          label = `${shortId(id)} (gps ${Math.round(ageMs/1000)}s)`;
+        } else if (hasGps) {
+          const s = ageMs === null ? '?' : Math.round(ageMs/1000);
+          label = `${shortId(id)} (gps stale ${s}s)`;
+        } else {
+          label = `${shortId(id)} (no GPS)`;
+        }
+
         opts.push({ value: id, label });
       }
 
@@ -100,6 +118,7 @@
 
       // Restore selection if still present, else keep Auto
       if (current === '*') targetEl.value = '*';
+      else if (current === '**') targetEl.value = '**';
       else if (current && ids.includes(current)) targetEl.value = current;
       else targetEl.value = '';
     }
