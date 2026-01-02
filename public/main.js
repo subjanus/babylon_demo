@@ -478,6 +478,7 @@ const socket = io({
 // --- Constants ---
 const PLAYER_CUBE_Y  = -5;   // below camera
 const DROPPED_CUBE_Y = -1;   // "ground-ish"
+const PLAYER_POINTER_Y_OFFSET = 1.6; // raise player pointer above dropped cubes
 const REMOTE_SPHERE_Y_OFFSET = 10;
 
 const GPS_ALPHA = 0.12;      // smoothing strength (0..1). Higher = more responsive, more jitter.
@@ -784,7 +785,7 @@ function reconcileWorld(state) {
 
     if (isNumber(c.lat) && isNumber(c.lon)) {
       const { x, z } = latLonToXZ(c.lat, c.lon);
-      ptr.position.set(x, DROPPED_CUBE_Y + 0.25, z);
+      ptr.position.set(x, DROPPED_CUBE_Y + PLAYER_POINTER_Y_OFFSET, z);
       ptr.metadata = { ...(ptr.metadata || {}), lat: c.lat, lon: c.lon, kind: "playerPointer", socketId: id };
     }
 
