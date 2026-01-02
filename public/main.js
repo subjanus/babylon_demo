@@ -84,32 +84,46 @@ function ensureSelectionUI() {
 const { engine, scene } = initScene(canvas);
 const camera = initCamera(scene, canvas);
 
-// Drop indicator / pointer (rotates with camera orientation)
-const dropIndicator = BABYLON.MeshBuilder.CreateCylinder(
-  "dropIndicator",
-  { diameterTop: 0, diameterBottom: 0.7, height: 1.4, tessellation: 4 },
-  scene
-);
-dropIndicator.isPickable = false;
-
-// Point it forward (cone axis is Y by default)
-dropIndicator.rotation.x = Math.PI / 2;
-
-// Parent to camera so it mimics phone/mouse rotation perfectly
-dropIndicator.parent = camera;
-
-// Place slightly below and a touch forward so it reads as "at my feet, pointing"
-dropIndicator.position.set(0, -2.6, 2.2);
-
-const indMat = new BABYLON.StandardMaterial("dropIndicatorMat", scene);
-indMat.diffuseColor = BABYLON.Color3.FromHexString("#FFCC00");
-indMat.emissiveColor = BABYLON.Color3.FromHexString("#7A5B00");
-indMat.specularColor = BABYLON.Color3.Black();
-dropIndicator.material = indMat;
 
 
 // A root node for world objects (lets us optionally stabilize heading by rotating the world).
 const worldRoot = new BABYLON.TransformNode("worldRoot", scene);
+
+// --- Drop pointer (world-space marker under you, rotates to match camera heading) ---
+const dropPointer = BABYLON.MeshBuilder.CreateCylinder(
+  "dropPointer",
+  { diameterTop: 0, diameterBottom: 0.9, height: 1.6, tessellation: 4 },
+  scene
+);
+dropPointer.isPickable = false;
+dropPointer.parent = worldRoot;
+
+// Orient the pyramid to point "forward" along +Z in local space (we'll spin it by yaw)
+dropPointer.rotation.x = Math.PI / 2;
+
+const dropPointerMat = new BABYLON.StandardMaterial("dropPointerMat", scene);
+dropPointerMat.diffuseColor = BABYLON.Color3.FromHexString("#FFCC00");
+dropPointerMat.emissiveColor = BABYLON.Color3.FromHexString("#3b2f00");
+dropPointerMat.specularColor = BABYLON.Color3.Black();
+dropPointer.material = dropPointerMat;
+
+// Keep it under the local player and rotate it to mirror camera yaw (mouse or phone)
+function updateDropPointer() {
+  if (!socket?.id) return;
+  const me = playerCubes[socket.id];
+  if (!me) return;
+
+  // Position it at your feet (same x/z as your local player cube)
+  dropPointer.position.x = me.position.x;
+  dropPointer.position.z = me.position.z;
+  dropPointer.position.y = DROPPED_CUBE_Y + 0.25;
+
+  // Mirror the camera heading in the rendered world.
+  // Because worldRoot may be rotated (Lock North), compensate so pointer matches what you see.
+  const yaw = getCameraYawRad();
+  dropPointer.rotation.y = yaw + worldRoot.rotation.y;
+}
+
 
 // --- In-canvas Drawer UI (Babylon GUI) ---
 let ui = null;
@@ -906,6 +920,7 @@ socket.on("worldState", (state) => {
 // --- Render loop ---
 engine.runRenderLoop(() => {
   applyHeadingStabilization();
+  updateDropPointer();
   updateSelectionHUD();
   scene.render();
 });
