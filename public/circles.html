@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Circle Spawner</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    html, body { margin:0; padding:0; background:#0b0e12; color:#e6edf3; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    .wrap { padding:16px; max-width: 680px; }
+    button { width:100%; background:#111827; color:#e6edf3; border:1px solid #374151; border-radius:14px; padding:16px 14px; font-size:16px; cursor:pointer; margin-top: 12px; }
+    button:active { transform: translateY(1px); }
+    .muted { color:#94a3b8; font-size: 12px; line-height: 1.4; }
+    .row { display:flex; gap: 10px; align-items:center; }
+    input[type=range] { width:100%; }
+    a { color:#93c5fd; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2 style="margin:0 0 8px 0;">Circle Spawner</h2>
+    <div class="muted">Tap the big button to inject random circles (proto-grass) around <b>your current player position</b>. Everyone will see them.</div>
+    <div class="muted" style="margin-top:6px;">Back to debug: <a href="/debug">/debug</a></div>
+
+    <div style="margin-top:14px;">
+      <div class="muted" style="margin-bottom:6px;">Count: <span id="countVal">60</span></div>
+      <div class="row"><input id="count" type="range" min="1" max="400" value="60" /></div>
+
+      <div class="muted" style="margin:12px 0 6px 0;">Radius (meters): <span id="radiusVal">80</span></div>
+      <div class="row"><input id="radius" type="range" min="5" max="350" value="80" /></div>
+    </div>
+
+    <button id="spawn">Spawn circles</button>
+    <button id="clear" style="background:#2a0f14; border-color:#7f1d1d;">Clear circles</button>
+
+    <div id="status" class="muted" style="margin-top:10px;">Connecting…</div>
+  </div>
+
+  <script>
+    const socket = io({ transports: ['websocket','polling'] });
+
+    const countEl = document.getElementById('count');
+    const radiusEl = document.getElementById('radius');
+    const countVal = document.getElementById('countVal');
+    const radiusVal = document.getElementById('radiusVal');
+    const status = document.getElementById('status');
+
+    function sync() {
+      countVal.textContent = String(countEl.value);
+      radiusVal.textContent = String(radiusEl.value);
+    }
+    countEl.addEventListener('input', sync);
+    radiusEl.addEventListener('input', sync);
+    sync();
+
+    socket.on('connect', () => { status.textContent = 'Connected'; });
+
+    document.getElementById('spawn').addEventListener('click', () => {
+      socket.emit('spawnCircles', { count: Number(countEl.value), radius: Number(radiusEl.value) });
+      status.textContent = 'Spawn requested';
+    });
+
+    document.getElementById('clear').addEventListener('click', () => {
+      socket.emit('clearCircles');
+      status.textContent = 'Clear requested';
+    });
+  </script>
+</body>
+</html>

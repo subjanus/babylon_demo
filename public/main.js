@@ -375,7 +375,7 @@ function setSelection(mesh) {
   selectedLon = (typeof md.lon === "number") ? md.lon : null;
 
   if (selectedKind === "droppedCube") selectedLabel = `Cube #${selectedId}`;
-  else if (selectedKind === "playerCube" || selectedKind === "playerSphere") selectedLabel = `Player ${shortId(String(selectedId || ""))}`;
+  else if (selectedKind === "playerPointer") selectedLabel = `Player ${shortId(String(selectedId || ""))}`;
   else selectedLabel = String(md.kind);
 
   updateSelectionHUD();
@@ -490,6 +490,88 @@ const YAW_ALPHA = 0.08;      // heading smoothing if Lock North is enabled
 // Telemetry throttling
 const TELEMETRY_MIN_MS = 500;
 
+
+// --- Environment ---
+function initEnvironment() {
+  // Background
+  scene.clearColor = new BABYLON.Color4(0.04, 0.06, 0.09, 1);
+
+  // Distance haze
+  scene.fogMode = BABYLON.Scene.FOGMODE_EXP2;
+  scene.fogDensity = 0.006;
+  scene.fogColor = new BABYLON.Color3(0.04, 0.06, 0.09);
+
+  // A big ground plane at "ground level" (visual + soft constraint)
+  const ground = BABYLON.MeshBuilder.CreateGround(
+    'groundPlane',
+    { width: 2500, height: 2500, subdivisions: 2 },
+    scene
+  );
+  ground.position.y = DROPPED_CUBE_Y;
+
+  const gmat = new BABYLON.StandardMaterial('groundMat', scene);
+  gmat.diffuseColor = new BABYLON.Color3(0.06, 0.08, 0.10);
+  gmat.specularColor = BABYLON.Color3.Black();
+  gmat.alpha = 0.98;
+  ground.material = gmat;
+  ground.isPickable = false;
+
+  // Ground mist (local, around the camera)
+  const smokeTex = (() => {
+    const c = document.createElement('canvas');
+    c.width = 64; c.height = 64;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
+    g.addColorStop(0.0, 'rgba(255,255,255,0.55)');
+    g.addColorStop(0.5, 'rgba(255,255,255,0.16)');
+    g.addColorStop(1.0, 'rgba(255,255,255,0.0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 64, 64);
+    return new BABYLON.Texture(c.toDataURL('image/png'), scene, true, false);
+  })();
+
+  const mist = new BABYLON.ParticleSystem('groundMist', 1400, scene);
+  mist.particleTexture = smokeTex;
+  mist.minSize = 1.6;
+  mist.maxSize = 5.0;
+  mist.minLifeTime = 2.8;
+  mist.maxLifeTime = 6.5;
+  mist.emitRate = 220;
+  mist.blendMode = BABYLON.ParticleSystem.BLENDMODE_STANDARD;
+
+  mist.color1 = new BABYLON.Color4(0.85, 0.92, 1.0, 0.10);
+  mist.color2 = new BABYLON.Color4(0.85, 0.92, 1.0, 0.02);
+  mist.colorDead = new BABYLON.Color4(0, 0, 0, 0);
+
+  mist.gravity = new BABYLON.Vector3(0, 0, 0);
+  mist.direction1 = new BABYLON.Vector3(-0.05, 0.02, -0.05);
+  mist.direction2 = new BABYLON.Vector3( 0.05, 0.05,  0.05);
+  mist.minEmitPower = 0.3;
+  mist.maxEmitPower = 0.9;
+  mist.updateSpeed = 0.01;
+
+  // Emit from a box centered on the camera (which is typically at x=z=0)
+  mist.emitter = new BABYLON.Vector3(0, DROPPED_CUBE_Y + 0.1, 0);
+  mist.createBoxEmitter(
+    new BABYLON.Vector3(-35, 0, -35),
+    new BABYLON.Vector3( 35, 0.6, 35),
+    new BABYLON.Vector3(-0.05, 0.02, -0.05),
+    new BABYLON.Vector3( 0.05, 0.05,  0.05),
+    0.3,
+    0.9
+  );
+  mist.start();
+
+  // Soft floor: keep the camera from dipping under the ground.
+  scene.onBeforeRenderObservable.add(() => {
+    if (camera.position.y < 0.6) camera.position.y = 0.6;
+
+    // Keep mist centered on the camera's X/Z.
+    mist.emitter.x = camera.position.x;
+    mist.emitter.z = camera.position.z;
+  });
+}
+
 // --- State ---
 let worldOrigin = null;      // {lat, lon} from server
 let metersPerDegLon = null;
@@ -512,9 +594,12 @@ const YAW_SEND_MIN_DELTA = 0.03; // ~1.7 degrees
 // Telemetry timing
 let lastTelemAt = 0;
 
+initEnvironment();
+
 // Entities
 const playerPointers = {}; // socketId -> pointer mesh (pyramid)
 const droppedCubes = {};  // blockId -> cube mesh
+const protoCircles = {};  // circleId -> circle mesh
 
 // --- Helpers ---
 function shortId(id){ return (id||'').slice(-4); }
@@ -577,14 +662,47 @@ function ensurePlayerPointer(id, color) {
 
 function ensureDroppedCube(blockId, color) {
   if (!droppedCubes[blockId]) {
-    const cube = initBox(scene, color);
-    cube.name = `droppedCube_${blockId}`;
+    const cube = BABYLON.MeshBuilder.CreateBox(`droppedCube_${blockId}`, { size: 2 }, scene);
+
+    const mat = new BABYLON.StandardMaterial(`droppedCubeMat_${blockId}`, scene);
+    mat.diffuseColor = BABYLON.Color3.FromHexString(color || "#00A3FF");
+    mat.specularColor = BABYLON.Color3.Black();
+    cube.material = mat;
+
     cube.parent = worldRoot;
-      cube.isPickable = true;
-  cube.metadata = { kind: "droppedCube", blockId: blockId };
-droppedCubes[blockId] = cube;
+    cube.isPickable = true;
+    cube.metadata = { kind: "droppedCube", blockId: blockId };
+
+    droppedCubes[blockId] = cube;
   }
   return droppedCubes[blockId];
+}
+
+function ensureCircle(circleId, scale = 1) {
+  if (protoCircles[circleId]) return protoCircles[circleId];
+
+  // Thin disc on the ground (proto-grass)
+  const disc = BABYLON.MeshBuilder.CreateCylinder(
+    `circle_${circleId}`,
+    { diameter: 1.2, height: 0.08, tessellation: 36 },
+    scene
+  );
+
+  const mat = new BABYLON.StandardMaterial(`circleMat_${circleId}`, scene);
+  mat.diffuseColor = new BABYLON.Color3(0.10, 0.55, 0.20);
+  mat.emissiveColor = new BABYLON.Color3(0.02, 0.12, 0.04);
+  mat.specularColor = BABYLON.Color3.Black();
+  mat.alpha = 0.85;
+  disc.material = mat;
+
+  disc.parent = worldRoot;
+  disc.isPickable = false;
+  disc.metadata = { kind: "protoCircle", circleId };
+
+  disc.scaling.set(scale, 1, scale);
+
+  protoCircles[circleId] = disc;
+  return disc;
 }
 
 // Extract yaw from camera quaternion (radians)
@@ -824,6 +942,24 @@ function reconcileWorld(state) {
     cube.metadata = { ...(cube.metadata || {}), lat: b.lat, lon: b.lon, kind: "droppedCube", blockId: b.id };
   }
 
+  // Proto circles (debug grass)
+  const presentCircles = new Set();
+  for (const c of (state.circles || [])) {
+    if (!isNumber(c.id) || !isNumber(c.x) || !isNumber(c.z)) continue;
+    presentCircles.add(String(c.id));
+
+    const disc = ensureCircle(c.id, isNumber(c.scale) ? c.scale : 1);
+    disc.position.set(c.x, DROPPED_CUBE_Y + 0.04, c.z);
+  }
+
+  for (const id of Object.keys(protoCircles)) {
+    if (!presentCircles.has(String(id))) {
+      protoCircles[id].dispose();
+      delete protoCircles[id];
+    }
+  }
+
+
   // Remove deleted dropped cubes (works even when droppedBlocks is empty)
   for (const id of Object.keys(droppedCubes)) {
     if (!presentBlocks.has(String(id))) {
@@ -857,19 +993,11 @@ socket.on("myCounters", (c) => {
 });
 
 socket.on("deleteResult", (r) => {
-  // Quick feedback so you can tell if the server accepted the delete
   if (!r || typeof r !== "object") return;
   if (r.ok) {
     setUIStatus(`Connected (${shortId(socket.id)}) | Deleted cube #${r.blockId}`);
-    if (r.actionCounters && lastWorldState) {
-      setUICounts(Object.keys(lastWorldState.clients || {}).length, (lastWorldState.droppedBlocks || []).length, r.actionCounters.deletedCubes || 0);
-    }
   } else {
-    const reason = r.reason || "rejected";
-    setUIStatus(`Connected (${shortId(socket.id)}) | Delete failed: ${reason}`);
-    if (r.actionCounters && lastWorldState) {
-      setUICounts(Object.keys(lastWorldState.clients || {}).length, (lastWorldState.droppedBlocks || []).length, r.actionCounters.deletedCubes || 0);
-    }
+    setUIStatus(`Connected (${shortId(socket.id)}) | Delete failed: ${r.reason || 'rejected'}`);
   }
 });
 
