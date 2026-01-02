@@ -225,11 +225,11 @@ function createDrawerUI() {
     }
   });
 
-  const bNorth = mkButton("uiNorth", "Lock North: Off", () => {
+  const bNorth = mkButton("uiNorth", "Lock North: Disabled", () => {
     lockNorth = !lockNorth;
     yawSmoothed = getCameraYawRad();
     yawZero = yawSmoothed;
-    bNorth.textBlock.text = lockNorth ? "Lock North: On" : "Lock North: Off";
+    bNorth.textBlock.text = "Lock North: Disabled";
     emitTelemetry("ui", { action: "lockNorth", lockNorth });
   });
 
@@ -621,17 +621,11 @@ function maybeSendOrientationUpdate() {
 }
 
 function applyHeadingStabilization() {
-  if (!lockNorth) {
-    worldRoot.rotation.y = 0;
-    return;
-  }
-
-  const yaw = getCameraYawRad();
-  const delta = normalizeAngleRad(yaw - yawSmoothed);
-  yawSmoothed = normalizeAngleRad(yawSmoothed + delta * YAW_ALPHA);
-
-  worldRoot.rotation.y = -(yawSmoothed - yawZero);
+  // Device/compass-based Lock North is disabled in this mode.
+  // We keep the world un-rotated so GPS mapping is easier to validate.
+  worldRoot.rotation.y = 0;
 }
+
 
 // --- Telemetry emit (best effort) ---
 function emitTelemetry(kind, extra = {}) {
@@ -674,13 +668,15 @@ if (btnPerm) {
 
 if (btnNorth) {
   btnNorth.addEventListener("click", () => {
-    lockNorth = !lockNorth;
+    lockNorth = false;
     yawSmoothed = getCameraYawRad();
     yawZero = yawSmoothed;
 
-    btnNorth.textContent = lockNorth ? "Lock North: On" : "Lock North: Off";
-    emitTelemetry("ui", { action: "lockNorth", lockNorth });
-  });
+    // Keep the label consistent
+    if (typeof bNorth !== "undefined" && bNorth && bNorth.textBlock) bNorth.textBlock.text = "Lock North: Disabled";
+    if (typeof btnNorth !== "undefined" && btnNorth) btnNorth.textContent = "Lock North: Disabled";
+    emitTelemetry("ui", { action: "lockNorth", lockNorth: false, disabled: true });
+});
 }
 
 if (btnColor) {
@@ -776,17 +772,6 @@ function reconcileWorld(state) {
   const clientIds = Object.keys(state.clients || {});
   const blockCount = (state.droppedBlocks || []).length;
 
-
-// Centering: when Follow is ON, treat the local player as the origin (0,0) in world space.
-// This avoids the "fish bowl" effect when Lock North rotates the world.
-let centerX = 0, centerZ = 0;
-if (followMe && socket.id && state.clients && state.clients[socket.id] && typeof state.clients[socket.id].lat === 'number' && typeof state.clients[socket.id].lon === 'number') {
-  const meC = state.clients[socket.id];
-  const p = latLonToXZ(meC.lat, meC.lon);
-  centerX = p.x;
-  centerZ = p.z;
-}
-
   setUIStatus(`Connected (${shortId(socket.id)})`);
   setUICounts(clientIds.length, blockCount, myDeletedCount);
 
@@ -796,7 +781,7 @@ if (followMe && socket.id && state.clients && state.clients[socket.id] && typeof
 
     if (isNumber(c.lat) && isNumber(c.lon)) {
       const { x, z } = latLonToXZ(c.lat, c.lon);
-      ptr.position.set(x - centerX, DROPPED_CUBE_Y + PLAYER_POINTER_Y_OFFSET, z - centerZ);
+      ptr.position.set(x, DROPPED_CUBE_Y + PLAYER_POINTER_Y_OFFSET, z);
       ptr.metadata = { ...(ptr.metadata || {}), lat: c.lat, lon: c.lon, kind: "playerPointer", socketId: id };
     }
 
@@ -816,14 +801,12 @@ if (followMe && socket.id && state.clients && state.clients[socket.id] && typeof
     }
   }
 
-  // Follow mode is handled by centering positions in reconcileWorld (no worldRoot translation).
-
-
-
-  // Keep root translation neutral; centering happens via per-mesh offsets.
-  worldRoot.position.x = 0;
-  worldRoot.position.z = 0;
-
+  // Follow mode: translate the world so the local player's cube stays centered under the camera.
+  if (followMe && socket.id && playerPointers[socket.id]) {
+    const me = playerPointers[socket.id];
+    worldRoot.position.x = -me.position.x;
+    worldRoot.position.z = -me.position.z;
+  }
 
   // Dropped cubes (create/update)
   const presentBlocks = new Set();
@@ -833,7 +816,7 @@ if (followMe && socket.id && state.clients && state.clients[socket.id] && typeof
 
     const cube = ensureDroppedCube(b.id, b.color);
     const { x, z } = latLonToXZ(b.lat, b.lon);
-    cube.position.set(x - centerX, DROPPED_CUBE_Y, z - centerZ);
+    cube.position.set(x, DROPPED_CUBE_Y, z);
     cube.metadata = { ...(cube.metadata || {}), lat: b.lat, lon: b.lon, kind: "droppedCube", blockId: b.id };
   }
 
