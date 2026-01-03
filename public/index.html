@@ -7,7 +7,7 @@
     <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <style>
-      html, body { margin:0; padding:0; height:100%; display:flex; flex-direction:column; background:#0b0e12; color:#e6edf3; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+      html, body {  margin:0; padding:0; height:100%; display:flex; flex-direction:column; background:#0b0e12; color:#e6edf3; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;  overflow:hidden; overscroll-behavior:none; }
       #renderCanvas { flex: 1 1 auto; width:100%; touch-action:none; display:block; }
       #hud { display:none; /* replaced by in-canvas drawer UI */ flex:0 0 auto; padding:8px 12px; border-top:1px solid #1f2937; background:#0d1117; display:grid; grid-template-columns: 1fr auto; gap:12px; align-items:center; }
       #status { font-size:12px; line-height:1.3; opacity:.9; }

@@ -225,9 +225,13 @@ function createDrawerUI() {
     }
   });
 
-  const bNorth = mkButton("uiNorth", "Lock North: Off", () => {
-    lockNorth = !lockNorth;
+  const bNorth = mkButton("uiNorth", "Lock North: Disabled", () => {
+    lockNorth = false;
     yawSmoothed = getCameraYawRad();
+    yawZero = yawSmoothed;
+    bNorth.textBlock.text = "Lock North: Disabled";
+    emitTelemetry("ui", { action: "lockNorthDisabled" });
+  });
     yawZero = yawSmoothed;
     bNorth.textBlock.text = lockNorth ? "Lock North: On" : "Lock North: Off";
     emitTelemetry("ui", { action: "lockNorth", lockNorth });
@@ -506,8 +510,8 @@ let yawSmoothed = 0;
 
 let lastYawSent = null;
 let lastYawSentAt = 0;
-const YAW_SEND_MIN_MS = 60;
-const YAW_SEND_MIN_DELTA = 0.01; // ~0.6 degrees
+const YAW_SEND_MIN_MS = 120;
+const YAW_SEND_MIN_DELTA = 0.03; // ~1.7 degrees
 
 // Telemetry timing
 let lastTelemAt = 0;
@@ -587,22 +591,27 @@ droppedCubes[blockId] = cube;
   return droppedCubes[blockId];
 }
 
-// Extract yaw from active camera (radians)
-// Works for both quaternion-based cameras and Euler-rotation cameras.
+// Extract yaw from camera quaternion (radians)
 function getCameraYawRad() {
-  const cam = scene.activeCamera || camera;
-  if (!cam) return 0;
+  const q = camera.rotationQuaternion;
+  if (!q) return camera.rotation?.y || 0;
 
-  const q = cam.rotationQuaternion;
-  if (q) {
-    // yaw from quaternion
-    const ysqr = q.y * q.y;
-    const t3 = 2.0 * (q.w * q.y + q.x * q.z);
-    const t4 = 1.0 - 2.0 * (ysqr + q.z * q.z);
-    return Math.atan2(t3, t4);
-  }
+  const ysqr = q.y * q.y;
+  const t3 = 2.0 * (q.w * q.y + q.x * q.z);
+  const t4 = 1.0 - 2.0 * (ysqr + q.z * q.z);
+  return Math.atan2(t3, t4);
+}
 
-  return cam.rotation?.y || 0;
+
+function clampCameraPitch() {
+  // Keep pitch in a sensible range so touch/mouse doesn't flip the world.
+  // +x looks down, -x looks up (Babylon free camera).
+  const cam = scene.activeCamera;
+  if (!cam || !cam.rotation) return;
+  const minPitch = -1.35; // ~ -77°
+  const maxPitch =  1.15; // ~  66°
+  if (cam.rotation.x < minPitch) cam.rotation.x = minPitch;
+  if (cam.rotation.x > maxPitch) cam.rotation.x = maxPitch;
 }
 
 function normalizeAngleRad(a) {
@@ -680,10 +689,7 @@ if (btnPerm) {
 }
 
 if (btnNorth) {
-  btnNorth.addEventListener("click", () => {
-    lockNorth = !lockNorth;
-    yawSmoothed = getCameraYawRad();
-    yawZero = yawSmoothed;
+      yawZero = yawSmoothed;
 
     btnNorth.textContent = lockNorth ? "Lock North: On" : "Lock North: Off";
     emitTelemetry("ui", { action: "lockNorth", lockNorth });
@@ -895,6 +901,8 @@ socket.on("worldState", (state) => {
 
 // --- Render loop ---
 engine.runRenderLoop(() => {
+  // Drag-look camera: keep pitch sane, and broadcast yaw for pointers.
+  clampCameraPitch();
   applyHeadingStabilization();
   maybeSendOrientationUpdate();
   updateSelectionHUD();
