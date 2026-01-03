@@ -1,25 +1,18 @@
-// public/requestPermissions.js
-// iOS requires explicit permission for motion/orientation sensors.
 export async function requestDevicePermissions() {
-  const results = { motion: null, orientation: null };
-
-  // DeviceMotion
-  if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
-    try {
-      results.motion = await DeviceMotionEvent.requestPermission();
-    } catch (e) {
-      results.motion = "error";
+  try {
+    // iOS 13+ requires a user gesture for these.
+    if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+      const r = await DeviceMotionEvent.requestPermission();
+      if (r !== "granted") return false;
     }
-  }
+  } catch (e) { return false; }
 
-  // DeviceOrientation
-  if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
-    try {
-      results.orientation = await DeviceOrientationEvent.requestPermission();
-    } catch (e) {
-      results.orientation = "error";
+  try {
+    if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+      const r2 = await DeviceOrientationEvent.requestPermission();
+      if (r2 !== "granted") return false;
     }
-  }
+  } catch (e) { return false; }
 
-  return results;
+  return true;
 }

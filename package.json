@@ -2,11 +2,10 @@
   "name": "gps-babylon-socket-game",
   "version": "1.0.0",
   "private": true,
-  "description": "GPS multiplayer web toy: Babylon.js + Socket.IO. Clients share GPS + heading; drop and delete cubes.",
-  "main": "server/index.js",
+  "description": "GPS web game using Babylon.js + Socket.IO",
+  "main": "index.js",
   "scripts": {
-    "start": "node server/index.js",
-    "dev": "node server/index.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "express": "^4.19.2",
