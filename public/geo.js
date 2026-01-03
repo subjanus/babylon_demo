@@ -1,13 +1,14 @@
-// Local tangent plane (swapped axes to match current scene orientation).
-// X = east (m), Z = south (m) relative to a reference lat/lon.
-export function latLonToLocal(lat, lon, refLat, refLon) {
-  const φ = toRad(refLat);
-  const mPerDegLat = 111132.92 - 559.82 * Math.cos(2*φ) + 1.175 * Math.cos(4*φ);
-  const mPerDegLon = 111412.84 * Math.cos(φ) - 93.5 * Math.cos(3*φ);
-  const dx = (lon - refLon) * mPerDegLon;
-  const dz = (refLat - lat) * mPerDegLat;
-  return { x: dx, z: dz };
+// public/geo.js
+// Tiny helpers; the main watchPosition loop lives in main.js.
+export function isNumber(n) {
+  return typeof n === "number" && Number.isFinite(n);
 }
 
-export const toRad = d => d * Math.PI / 180;
-export const toFix5 = n => Number(n.toFixed(5));
+// Fast-ish planar approximation, good for small distances.
+// Uses latitude to scale longitude.
+export function approxDistMeters(lat1, lon1, lat2, lon2, lat0 = lat1) {
+  const kLon = 111320 * Math.cos(lat0 * Math.PI / 180);
+  const dx = (lon2 - lon1) * kLon;
+  const dz = (lat2 - lat1) * 111320;
+  return Math.hypot(dx, dz);
+}

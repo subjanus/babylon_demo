@@ -1,14 +1,40 @@
 // public/initBox.js
-// Small helper to create a colored cube (position is set by the caller).
+export function initBox(scene, { name = "box", size = 1, color = "#ffffff", y = 0 } = {}) {
+  const mesh = BABYLON.MeshBuilder.CreateBox(name, { size }, scene);
+  mesh.position.y = y;
 
-export function initBox(scene, hex = "#00A3FF") {
-  const box = BABYLON.MeshBuilder.CreateBox("box", { size: 2 }, scene);
+  const mat = new BABYLON.StandardMaterial(name + "_mat", scene);
+  mat.diffuseColor = BABYLON.Color3.FromHexString(color);
+  mat.specularColor = new BABYLON.Color3(0.05, 0.05, 0.05);
+  mesh.material = mat;
 
-  const mat = new BABYLON.StandardMaterial("boxMat", scene);
-  mat.diffuseColor = BABYLON.Color3.FromHexString(hex);
-  mat.specularColor = BABYLON.Color3.Black();
-  box.material = mat;
+  return mesh;
+}
 
-  // Caller sets parent + position
-  return box;
+export function initPyramid(scene, { name = "pyramid", height = 2, base = 1.2, color = "#ffffff", y = 0 } = {}) {
+  // 4-sided pyramid via low-tessellation cylinder
+  const mesh = BABYLON.MeshBuilder.CreateCylinder(
+    name,
+    { height, diameterTop: 0.0, diameterBottom: base, tessellation: 4 },
+    scene
+  );
+  mesh.position.y = y;
+
+  const mat = new BABYLON.StandardMaterial(name + "_mat", scene);
+  mat.diffuseColor = BABYLON.Color3.FromHexString(color);
+  mat.specularColor = new BABYLON.Color3(0.05, 0.05, 0.05);
+  mesh.material = mat;
+
+  // Make "forward" visually obvious by slightly skewing: add a small fin
+  const fin = BABYLON.MeshBuilder.CreateBox(name + "_fin", { width: 0.15, height: 0.6, depth: 0.4 }, scene);
+  fin.parent = mesh;
+  fin.position.y = 0.15;
+  fin.position.z = base * 0.35;
+  fin.isPickable = false;
+  const fmat = new BABYLON.StandardMaterial(name + "_fin_mat", scene);
+  fmat.diffuseColor = BABYLON.Color3.FromHexString(color);
+  fmat.specularColor = new BABYLON.Color3(0, 0, 0);
+  fin.material = fmat;
+
+  return mesh;
 }
