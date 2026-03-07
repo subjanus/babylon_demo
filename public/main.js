@@ -25,7 +25,7 @@ horizonMat.emissiveColor = new BABYLON.Color3(0.3, 0.6, 1.0);
 horizonMat.alpha = 0.55;
 horizonMat.disableLighting = true;
 horizonRing.material = horizonMat;
-horizonRing.rotation.x = Math.PI / 2;
+// Torus is already in the ground plane here; leave it level for a true horizon guide.
 horizonRing.parent = horizonRoot;
 
 const northTick = BABYLON.MeshBuilder.CreateCylinder("northTick", { height: 0.85, diameterTop: 0.0, diameterBottom: 0.35, tessellation: 12 }, scene);
