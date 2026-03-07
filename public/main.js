@@ -55,6 +55,7 @@ let motionEnabled = false;
 let localYawRad = 0;
 let localPitchRad = 0;
 let localRollRad = 0;
+let lastGeoHeadingRad = null;
 let lastYawSent = null;
 let lastYawSentAt = 0;
 let lastTelemAt = 0;
@@ -198,16 +199,23 @@ function updateLocalHorizon() {
   horizonRoot.rotation.set(0, -yaw, 0);
 }
 
-function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg) {
+function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg = null) {
   const screenAngleDeg = (typeof window.orientation === "number") ? window.orientation : (screen.orientation?.angle || 0);
   const alpha = BABYLON.Angle.FromDegrees(alphaDeg || 0).radians();
   const beta = BABYLON.Angle.FromDegrees(betaDeg || 0).radians();
   const gamma = BABYLON.Angle.FromDegrees(gammaDeg || 0).radians();
   const screen = BABYLON.Angle.FromDegrees(screenAngleDeg || 0).radians();
 
-  // Practical phone mapping: yaw from compass alpha, pitch from front/back tilt, roll from side tilt.
-  // Screen rotation compensation keeps portrait/landscape behavior sane on iPhone.
-  localYawRad = normalizeAngleRad(alpha + screen);
+  // On iPhone Safari, webkitCompassHeading is often the most reliable yaw source.
+  // It is degrees clockwise from north, so convert to our Babylon yaw convention.
+  if (Number.isFinite(compassHeadingDeg)) {
+    localYawRad = normalizeAngleRad(-BABYLON.Angle.FromDegrees(compassHeadingDeg).radians() + screen);
+  } else if (Number.isFinite(alphaDeg)) {
+    localYawRad = normalizeAngleRad(alpha + screen);
+  } else if (Number.isFinite(lastGeoHeadingRad)) {
+    localYawRad = lastGeoHeadingRad;
+  }
+
   localPitchRad = BABYLON.Scalar.Clamp(beta - Math.PI / 2, -1.35, 1.35);
   localRollRad = BABYLON.Scalar.Clamp(gamma, -1.35, 1.35);
 
@@ -216,10 +224,13 @@ function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg) {
   camera.rotation.z = -localRollRad * 0.35;
 }
 
-window.addEventListener("deviceorientation", (ev) => {
+function handleDeviceOrientation(ev) {
   if (!motionEnabled) return;
-  applyDeviceOrientation(ev.alpha, ev.beta, ev.gamma);
-}, true);
+  const compassHeadingDeg = Number.isFinite(ev.webkitCompassHeading) ? ev.webkitCompassHeading : null;
+  applyDeviceOrientation(ev.alpha, ev.beta, ev.gamma, compassHeadingDeg);
+}
+window.addEventListener("deviceorientation", handleDeviceOrientation, true);
+window.addEventListener("deviceorientationabsolute", handleDeviceOrientation, true);
 
 function applyHeadingStabilization() {
   if (!lockNorth) {
@@ -648,6 +659,13 @@ scene.onPointerObservable.add((pi) => {
 
 function onGeo(lat, lon, coords) {
   rawLat = lat; rawLon = lon;
+  if (Number.isFinite(coords?.heading)) {
+    lastGeoHeadingRad = normalizeAngleRad(-BABYLON.Angle.FromDegrees(coords.heading).radians());
+    if (!motionEnabled) {
+      localYawRad = lastGeoHeadingRad;
+      camera.rotation.y = localYawRad;
+    }
+  }
   if (filtLat === null || filtLon === null) {
     filtLat = lat; filtLon = lon;
   } else {
@@ -691,6 +709,16 @@ if ("geolocation" in navigator) {
     () => {},
     { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 }
   );
+}
+
+function updateLocalPlayerPointer() {
+  const ptr = playerPointers[socket.id];
+  const me = currentRel();
+  if (!ptr || !me) return;
+  ptr.setEnabled(true);
+  ptr.position.set(me.x, PLAYER_POINTER_Y, me.z);
+  ptr.rotation.y = getCameraYawRad() - worldRoot.rotation.y;
+  ptr.metadata = { kind: "playerPointer", socketId: socket.id, rel: { x: me.x, z: me.z } };
 }
 
 function reconcileWorld(state) {
@@ -818,6 +846,7 @@ socket.on("worldState", (state) => {
 
 engine.runRenderLoop(() => {
   applyHeadingStabilization();
+  updateLocalPlayerPointer();
   maybeSendOrientationUpdate();
   updateLocalHorizon();
   updateSelectionHUD();
