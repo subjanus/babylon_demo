@@ -51,6 +51,10 @@ let followMe = true;
 let lockNorth = false;
 let yawZero = 0;
 let yawSmoothed = 0;
+let motionEnabled = false;
+let localYawRad = 0;
+let localPitchRad = 0;
+let localRollRad = 0;
 let lastYawSent = null;
 let lastYawSentAt = 0;
 let lastTelemAt = 0;
@@ -168,12 +172,7 @@ function applyAnchor(lat, lon) {
 }
 
 function getCameraYawRad() {
-  const q = camera.rotationQuaternion;
-  if (!q) return camera.rotation?.y || 0;
-  const ysqr = q.y * q.y;
-  const t3 = 2.0 * (q.w * q.y + q.x * q.z);
-  const t4 = 1.0 - 2.0 * (ysqr + q.z * q.z);
-  return Math.atan2(t3, t4);
+  return Number.isFinite(localYawRad) ? localYawRad : (camera.rotation?.y || 0);
 }
 function normalizeAngleRad(a) {
   while (a > Math.PI) a -= 2 * Math.PI;
@@ -194,11 +193,33 @@ function maybeSendOrientationUpdate() {
   socket.emit("orientationUpdate", { yaw });
 }
 function updateLocalHorizon() {
-  const q = camera.rotationQuaternion;
-  const yaw = q ? q.toEulerAngles().y : (camera.rotation?.y || 0);
+  const yaw = getCameraYawRad();
   horizonRoot.position.set(camera.position.x, camera.position.y - 2.15, camera.position.z);
   horizonRoot.rotation.set(0, -yaw, 0);
 }
+
+function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg) {
+  const screenAngleDeg = (typeof window.orientation === "number") ? window.orientation : (screen.orientation?.angle || 0);
+  const alpha = BABYLON.Angle.FromDegrees(alphaDeg || 0).radians();
+  const beta = BABYLON.Angle.FromDegrees(betaDeg || 0).radians();
+  const gamma = BABYLON.Angle.FromDegrees(gammaDeg || 0).radians();
+  const screen = BABYLON.Angle.FromDegrees(screenAngleDeg || 0).radians();
+
+  // Practical phone mapping: yaw from compass alpha, pitch from front/back tilt, roll from side tilt.
+  // Screen rotation compensation keeps portrait/landscape behavior sane on iPhone.
+  localYawRad = normalizeAngleRad(alpha + screen);
+  localPitchRad = BABYLON.Scalar.Clamp(beta - Math.PI / 2, -1.35, 1.35);
+  localRollRad = BABYLON.Scalar.Clamp(gamma, -1.35, 1.35);
+
+  camera.rotation.x = -localPitchRad;
+  camera.rotation.y = localYawRad;
+  camera.rotation.z = -localRollRad * 0.35;
+}
+
+window.addEventListener("deviceorientation", (ev) => {
+  if (!motionEnabled) return;
+  applyDeviceOrientation(ev.alpha, ev.beta, ev.gamma);
+}, true);
 
 function applyHeadingStabilization() {
   if (!lockNorth) {
@@ -413,7 +434,10 @@ function createDrawerUI() {
 
   mkButton(root, "uiPerm", "Enable Motion", async (btn) => {
     const ok = await requestDevicePermissions();
+    motionEnabled = !!ok;
     btn.textBlock.text = ok ? "Motion Enabled" : "Motion Blocked";
+    if (!ok) return;
+    setStatus("Motion enabled");
   });
 
   mkButton(root, "uiColor", "Toggle Color", () => socket.emit("toggleColor"));
@@ -687,7 +711,8 @@ function reconcileWorld(state) {
     ptr.setEnabled(true);
     ptr.position.set(c.relX, PLAYER_POINTER_Y, c.relZ);
     ptr.metadata = { kind: "playerPointer", socketId: id, rel: { x: c.relX, z: c.relZ } };
-    if (isNumber(c.yaw)) ptr.rotation.y = c.yaw - worldRoot.rotation.y;
+    if (id === socket.id) ptr.rotation.y = getCameraYawRad() - worldRoot.rotation.y;
+    else if (isNumber(c.yaw)) ptr.rotation.y = c.yaw - worldRoot.rotation.y;
   }
 
   for (const id of Object.keys(playerPointers)) {
