@@ -89,9 +89,6 @@ let anchorKey = "0.000000,0.000000";
 let rawLat = null, rawLon = null;
 let filtLat = null, filtLon = null;
 let lastSentRelX = null, lastSentRelZ = null, lastSentAt = 0;
-let motionTrackingActive = false;
-let orientationHandlerAttached = false;
-let latestDeviceAngles = null;
 
 const playerPointers = {};
 const objectMeshes = {};
@@ -168,57 +165,6 @@ function applyAnchor(lat, lon) {
   if (anchorSummaryText) anchorSummaryText.text = `Anchor: ${anchorLat.toFixed(6)}, ${anchorLon.toFixed(6)}`;
   saveAnchor();
   sendGpsNow();
-}
-function screenOrientationRad() {
-  const a = window.screen?.orientation?.angle;
-  const fallback = typeof window.orientation === "number" ? window.orientation : 0;
-  const deg = Number.isFinite(a) ? a : fallback;
-  return BABYLON.Tools.ToRadians(deg || 0);
-}
-function applyDeviceOrientation(alphaDeg = 0, betaDeg = 0, gammaDeg = 0) {
-  latestDeviceAngles = { alphaDeg, betaDeg, gammaDeg };
-  const yaw = BABYLON.Tools.ToRadians(alphaDeg || 0);
-  const pitch = BABYLON.Tools.ToRadians(betaDeg || 0);
-  const roll = BABYLON.Tools.ToRadians(-(gammaDeg || 0));
-
-  let q = BABYLON.Quaternion.RotationYawPitchRoll(yaw, pitch, roll);
-  q = q.multiply(BABYLON.Quaternion.RotationAxis(BABYLON.Axis.X, -Math.PI / 2));
-  q = q.multiply(BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Z, -screenOrientationRad()));
-
-  if (!camera.rotationQuaternion) camera.rotationQuaternion = BABYLON.Quaternion.Identity();
-  camera.rotationQuaternion.copyFrom(q);
-}
-function startMotionTracking() {
-  if (orientationHandlerAttached) {
-    motionTrackingActive = true;
-    if (latestDeviceAngles) applyDeviceOrientation(latestDeviceAngles.alphaDeg, latestDeviceAngles.betaDeg, latestDeviceAngles.gammaDeg);
-    return true;
-  }
-
-  const handler = (ev) => {
-    const alpha = Number(ev?.alpha);
-    const beta = Number(ev?.beta);
-    const gamma = Number(ev?.gamma);
-    if (!Number.isFinite(alpha) && !Number.isFinite(beta) && !Number.isFinite(gamma)) return;
-    if (!motionTrackingActive) return;
-    applyDeviceOrientation(
-      Number.isFinite(alpha) ? alpha : 0,
-      Number.isFinite(beta) ? beta : 0,
-      Number.isFinite(gamma) ? gamma : 0
-    );
-  };
-
-  window.addEventListener("deviceorientation", handler, true);
-  window.addEventListener("orientationchange", () => {
-    if (motionTrackingActive && latestDeviceAngles) {
-      applyDeviceOrientation(latestDeviceAngles.alphaDeg, latestDeviceAngles.betaDeg, latestDeviceAngles.gammaDeg);
-      engine.resize();
-    }
-  }, true);
-
-  orientationHandlerAttached = true;
-  motionTrackingActive = true;
-  return true;
 }
 
 function getCameraYawRad() {
@@ -467,16 +413,7 @@ function createDrawerUI() {
 
   mkButton(root, "uiPerm", "Enable Motion", async (btn) => {
     const ok = await requestDevicePermissions();
-    if (ok) {
-      startMotionTracking();
-      btn.textBlock.text = "Motion Enabled";
-      setStatus("Motion tracking enabled");
-      emitTelemetry("ui", { action: "motionEnabled" });
-    } else {
-      btn.textBlock.text = "Motion Blocked";
-      setStatus("Motion permission blocked");
-      emitTelemetry("ui", { action: "motionBlocked" });
-    }
+    btn.textBlock.text = ok ? "Motion Enabled" : "Motion Blocked";
   });
 
   mkButton(root, "uiColor", "Toggle Color", () => socket.emit("toggleColor"));
@@ -720,14 +657,6 @@ function maybeSendGpsUpdate() {
   lastSentRelX = rel.x; lastSentRelZ = rel.z; lastSentAt = now; sendGpsNow();
 }
 
-function updateLocalPlayerPointer() {
-  const ptr = playerPointers[socket.id];
-  if (!ptr || !ptr.isEnabled()) return;
-  const me = currentRel();
-  if (me) ptr.metadata = { kind: "playerPointer", socketId: socket.id, rel: { x: me.x, z: me.z } };
-  ptr.rotation.y = getCameraYawRad() - worldRoot.rotation.y;
-}
-
 if ("geolocation" in navigator) {
   navigator.geolocation.watchPosition(
     (pos) => {
@@ -758,8 +687,7 @@ function reconcileWorld(state) {
     ptr.setEnabled(true);
     ptr.position.set(c.relX, PLAYER_POINTER_Y, c.relZ);
     ptr.metadata = { kind: "playerPointer", socketId: id, rel: { x: c.relX, z: c.relZ } };
-    if (id === socket.id) ptr.rotation.y = getCameraYawRad() - worldRoot.rotation.y;
-    else if (isNumber(c.yaw)) ptr.rotation.y = c.yaw - worldRoot.rotation.y;
+    if (isNumber(c.yaw)) ptr.rotation.y = c.yaw - worldRoot.rotation.y;
   }
 
   for (const id of Object.keys(playerPointers)) {
@@ -856,7 +784,6 @@ socket.on("connect", () => {
   setStatus("Connected");
   emitTelemetry("connect", { id: socket.id });
   sendGpsNow();
-  if (!orientationHandlerAttached) startMotionTracking();
 });
 
 socket.on("worldState", (state) => {
@@ -868,7 +795,6 @@ engine.runRenderLoop(() => {
   applyHeadingStabilization();
   maybeSendOrientationUpdate();
   updateLocalHorizon();
-  updateLocalPlayerPointer();
   updateSelectionHUD();
   scene.render();
 });
