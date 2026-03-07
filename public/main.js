@@ -195,8 +195,10 @@ function maybeSendOrientationUpdate() {
 }
 function updateLocalHorizon() {
   const yaw = getCameraYawRad();
+  const cameraRoll = camera.rotation?.z || 0;
   horizonRoot.position.set(camera.position.x, camera.position.y - 2.15, camera.position.z);
-  horizonRoot.rotation.set(0, -yaw, 0);
+  // Keep the helper horizon level on screen even when the phone rolls.
+  horizonRoot.rotation.set(0, -yaw, -cameraRoll);
 }
 
 function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg = null) {
