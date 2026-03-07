@@ -66,8 +66,7 @@ let uiStatusText = null;
 let uiCountsText = null;
 let uiSelectedText = null;
 let uiDeleteBtn = null;
-let anchorLatInput = null;
-let anchorLonInput = null;
+let anchorInput = null;
 let anchorSummaryText = null;
 let bFollow = null;
 let bNorth = null;
@@ -147,11 +146,22 @@ function loadAnchor() {
     }
   } catch (_) {}
 }
+function parseAnchorText(value) {
+  const raw = String(value ?? "").trim();
+  const m = raw.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (!m) return null;
+  const lat = Number(m[1]);
+  const lon = Number(m[2]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return { lat, lon };
+}
+function formatAnchorText(lat = anchorLat, lon = anchorLon) {
+  return `${Number(lat).toFixed(6)},${Number(lon).toFixed(6)}`;
+}
 function applyAnchor(lat, lon) {
   const n = normAnchor(lat, lon);
   anchorLat = n.lat; anchorLon = n.lon; anchorKey = n.key;
-  if (anchorLatInput) anchorLatInput.text = String(anchorLat);
-  if (anchorLonInput) anchorLonInput.text = String(anchorLon);
+  if (anchorInput) anchorInput.text = formatAnchorText(anchorLat, anchorLon);
   if (anchorSummaryText) anchorSummaryText.text = `Anchor: ${anchorLat.toFixed(6)}, ${anchorLon.toFixed(6)}`;
   saveAnchor();
   sendGpsNow();
@@ -348,11 +358,16 @@ function createDrawerUI() {
   anchorSummaryText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
   root.addControl(anchorSummaryText);
 
-  anchorLatInput = mkInput(root, "anchorLatInput", "Anchor Latitude", String(anchorLat));
-  anchorLonInput = mkInput(root, "anchorLonInput", "Anchor Longitude", String(anchorLon));
+  anchorInput = mkInput(root, "anchorInput", "Anchor Lat,Lon", formatAnchorText(anchorLat, anchorLon));
 
   mkButton(root, "uiSetAnchor", "Set Anchor", () => {
-    applyAnchor(Number(anchorLatInput.text), Number(anchorLonInput.text));
+    const parsed = parseAnchorText(anchorInput?.text);
+    if (!parsed) {
+      setStatus("Anchor format: lat,lon");
+      emitTelemetry("ui", { action: "setAnchorInvalid", value: anchorInput?.text || "" });
+      return;
+    }
+    applyAnchor(parsed.lat, parsed.lon);
     emitTelemetry("ui", { action: "setAnchor", anchorLat, anchorLon });
   });
 
