@@ -2,148 +2,117 @@
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Circle Spawner</title>
+  <title>Helper Daemon Console</title>
   <script src="/socket.io/socket.io.js"></script>
   <style>
-    html, body { margin:0; padding:0; background:#0b0e12; color:#e6edf3; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
-    .wrap { padding:16px; max-width: 680px; }
-    button { width:100%; background:#111827; color:#e6edf3; border:1px solid #374151; border-radius:14px; padding:16px 14px; font-size:16px; cursor:pointer; margin-top: 12px; }
-    button:active { transform: translateY(1px); }
-    .muted { color:#94a3b8; font-size: 12px; line-height: 1.4; }
-    .row { display:flex; gap: 10px; align-items:center; }
-    input[type=range] { width:100%; }
-    a { color:#93c5fd; }
+    body { margin:0; padding:16px; background:#0b0e12; color:#e6edf3; font-family: ui-sans-serif, system-ui, sans-serif; }
+    .wrap { max-width: 760px; margin: 0 auto; }
+    button, input { width:100%; background:#111827; color:#e6edf3; border:1px solid #374151; border-radius:12px; padding:12px; margin-top:10px; }
+    pre { background:#0d1117; border:1px solid #1f2937; border-radius:12px; padding:12px; overflow:auto; max-height:40vh; }
+    .muted { color:#94a3b8; font-size:12px; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h2 style="margin:0 0 8px 0;">Circle Spawner</h2>
-    <div class="muted">Tap the big button to inject random circles (proto-grass) around <b>your current player position</b>. Everyone will see them.</div>
-    <div class="muted" style="margin-top:6px;">Back to debug: <a href="/debug">/debug</a></div>
+    <h2 style="margin-top:0;">Helper Daemon Console</h2>
+    <div class="muted">This page signs in as a daemon. It can read world state, create objects, remove them, and react to trigger broadcasts.</div>
 
-    <div style="margin-top:14px;">
-      <div class="muted" style="margin-bottom:6px;">Count: <span id="countVal">60</span></div>
-      <div class="row"><input id="count" type="range" min="1" max="400" value="60" /></div>
+    <label class="muted" for="centerX">Center X</label>
+    <input id="centerX" type="number" value="0" step="1" />
 
-      <div class="muted" style="margin:12px 0 6px 0;">Radius (meters): <span id="radiusVal">80</span></div>
-      <div class="row"><input id="radius" type="range" min="5" max="350" value="80" /></div>
-    
-    <div style="margin-top:12px;">
-      <div class="muted" style="margin-bottom:6px;">Spawn around player:</div>
-      <select id="target" style="width:100%; background:#111827; color:#e6edf3; border:1px solid #374151; border-radius:14px; padding:12px 12px; font-size:14px;">
-        <option value="">Auto (first active player)</option>
-        <option value="*">All active players (fresh GPS)</option>
-        <option value="**">All GPS players (even stale)</option>
-      </select>
-      <div class="muted" style="margin-top:6px;">Tip: on laptop, you’ll often show up as "no GPS" unless you allow location. Use "even stale" to include a player that stopped sending updates.</div>
-    </div>
-</div>
+    <label class="muted" for="centerZ">Center Z</label>
+    <input id="centerZ" type="number" value="0" step="1" />
 
-    <button id="spawn">Spawn circles</button>
-    <button id="clear" style="background:#2a0f14; border-color:#7f1d1d;">Clear circles</button>
+    <label class="muted" for="count">Count</label>
+    <input id="count" type="number" value="12" min="1" max="120" />
 
-    <div id="status" class="muted" style="margin-top:10px;">Connecting…</div>
+    <label class="muted" for="radius">Radius</label>
+    <input id="radius" type="number" value="20" min="1" max="200" />
+
+    <button id="spawn">Spawn Trigger Ring</button>
+    <button id="snapshot">Refresh World Snapshot</button>
+    <button id="clear" style="background:#2a0f14;">Clear My Objects</button>
+
+    <h3>Status</h3>
+    <div id="status" class="muted">Connecting…</div>
+
+    <h3>Recent Trigger</h3>
+    <pre id="triggers">none</pre>
+
+    <h3>World Snapshot</h3>
+    <pre id="state">{}</pre>
   </div>
 
   <script>
-    const socket = io({ transports: ['websocket','polling'] });
+    const socket = io({
+      transports: ['websocket', 'polling'],
+      auth: { role: 'daemon', daemonType: 'circles', label: 'helper-daemon-circles' }
+    });
 
-    const countEl = document.getElementById('count');
-    const radiusEl = document.getElementById('radius');
-    const countVal = document.getElementById('countVal');
-    const radiusVal = document.getElementById('radiusVal');
     const status = document.getElementById('status');
+    const triggersEl = document.getElementById('triggers');
+    const stateEl = document.getElementById('state');
+    let latestState = null;
 
-    function sync() {
-      countVal.textContent = String(countEl.value);
-      radiusVal.textContent = String(radiusEl.value);
-    }
-    countEl.addEventListener('input', sync);
-    radiusEl.addEventListener('input', sync);
-    sync();
-
-    socket.on('connect', () => { status.textContent = 'Connected'; });
-
-    const targetEl = document.getElementById('target');
-
-    function shortId(id) {
-      if (!id) return '';
-      return String(id).slice(0, 4) + '…' + String(id).slice(-3);
-    }
-
-    function updateTargetOptions(state) {
-      const clients = state && state.clients ? state.clients : {};
-      const ids = Object.keys(clients);
-
-      // Keep current selection if possible
-      const current = targetEl.value;
-
-      // Build option list: Auto + target sets + client list
-      const opts = [];
-      opts.push({ value: '', label: 'Auto (first active player)' });
-      opts.push({ value: '*', label: 'All active players (fresh GPS)' });
-      opts.push({ value: '**', label: 'All GPS players (even stale)' });
-
-      const now = Date.now();
-      const STALE_MS = 15000;
-
-      for (const id of ids) {
-        const c = clients[id] || {};
-        const hasGps = Number.isFinite(c.lat) && Number.isFinite(c.lon);
-        const last = Number(c.lastGpsAt);
-        const ageMs = hasGps && Number.isFinite(last) ? (now - last) : null;
-        const isFresh = hasGps && ageMs !== null && ageMs <= STALE_MS;
-
-        let label;
-        if (isFresh) {
-          label = `${shortId(id)} (gps ${Math.round(ageMs/1000)}s)`;
-        } else if (hasGps) {
-          const s = ageMs === null ? '?' : Math.round(ageMs/1000);
-          label = `${shortId(id)} (gps stale ${s}s)`;
-        } else {
-          label = `${shortId(id)} (no GPS)`;
-        }
-
-        opts.push({ value: id, label });
-      }
-
-      // Replace options
-      targetEl.innerHTML = '';
-      for (const o of opts) {
-        const opt = document.createElement('option');
-        opt.value = o.value;
-        opt.textContent = o.label;
-        targetEl.appendChild(opt);
-      }
-
-      // Restore selection if still present, else keep Auto
-      if (current === '*') targetEl.value = '*';
-      else if (current === '**') targetEl.value = '**';
-      else if (current && ids.includes(current)) targetEl.value = current;
-      else targetEl.value = '';
-    }
-
+    socket.on('connect', () => status.textContent = 'Connected as helper daemon');
     socket.on('worldState', (state) => {
-      updateTargetOptions(state);
+      latestState = state;
+      stateEl.textContent = JSON.stringify(state, null, 2);
     });
 
-    socket.on('spawnCirclesResult', (r) => {
-      if (!r || typeof r !== 'object') return;
-      const targets = Array.isArray(r.targets) ? r.targets : [];
-      const label = targets.length === 0 ? 'auto' : (targets.length === 1 ? shortId(targets[0]) : `${targets.length} players`);
-      status.textContent = `Spawned ${r.totalAdded || 0} circles around ${label} (ids ${r.firstId || '?'}–${r.lastId || '?'})`;
+    socket.on('triggerEvent', (event) => {
+      triggersEl.textContent = JSON.stringify(event, null, 2);
+      if (event?.triggerId === 'beacon.ping' && event?.object?.position) {
+        socket.emit('createObject', {
+          kind: 'sphere',
+          color: '#34D399',
+          position: {
+            x: event.object.position.x,
+            y: event.object.position.y + 2,
+            z: event.object.position.z
+          },
+          scale: { x: 0.8, y: 0.8, z: 0.8 },
+          label: 'Daemon Echo',
+          billboard: false,
+          props: { spawnedBy: 'triggerEvent', triggerId: event.triggerId }
+        });
+      }
     });
 
+    document.getElementById('snapshot').addEventListener('click', () => {
+      socket.emit('requestWorldState', null, (state) => {
+        latestState = state;
+        stateEl.textContent = JSON.stringify(state, null, 2);
+      });
+    });
 
     document.getElementById('spawn').addEventListener('click', () => {
-      const tid = targetEl.value;
-      socket.emit('spawnCircles', { count: Number(countEl.value), radius: Number(radiusEl.value), targetId: tid === '' ? null : tid });
-      status.textContent = 'Spawn requested';
+      const cx = Number(document.getElementById('centerX').value || 0);
+      const cz = Number(document.getElementById('centerZ').value || 0);
+      const count = Math.max(1, Math.min(120, Number(document.getElementById('count').value || 12)));
+      const radius = Math.max(1, Math.min(200, Number(document.getElementById('radius').value || 20)));
+
+      for (let i = 0; i < count; i++) {
+        const a = (Math.PI * 2 * i) / count;
+        socket.emit('createObject', {
+          kind: 'sphere',
+          color: '#F59E0B',
+          position: { x: cx + Math.cos(a) * radius, y: 1, z: cz + Math.sin(a) * radius },
+          scale: { x: 1.2, y: 1.2, z: 1.2 },
+          label: `Ring Node ${i + 1}`,
+          trigger: { id: 'ring.node.touch', mode: 'tap' },
+          props: { daemonType: 'circles', nodeIndex: i }
+        });
+      }
     });
 
     document.getElementById('clear').addEventListener('click', () => {
-      socket.emit('clearCircles');
-      status.textContent = 'Clear requested';
+      const objects = latestState?.worldObjects || {};
+      for (const obj of Object.values(objects)) {
+        if (obj.ownerId === socket.id) {
+          socket.emit('destroyObject', { objectId: obj.id });
+        }
+      }
     });
   </script>
 </body>

@@ -5,92 +5,48 @@
   <title>GPS Game Debug</title>
   <script src="/socket.io/socket.io.js"></script>
   <style>
-    html, body {
-      margin: 0;
-      padding: 0;
-      background: #0b0e12;
-      color: #e6edf3;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-    }
-    .wrap { padding: 14px; max-width: 900px; }
-    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-    button { background:#111827; color:#e6edf3; border:1px solid #374151; border-radius:10px; padding:8px 10px; font-size:12px; cursor:pointer; }
-    pre { background:#0d1117; border:1px solid #1f2937; border-radius:12px; padding:10px; overflow:auto; max-height: 55vh; }
-    .muted { color: #94a3b8; font-size: 12px; }
-    a { color:#93c5fd; }
+    body { margin:0; padding:14px; background:#0b0e12; color:#e6edf3; font-family: ui-sans-serif, system-ui, sans-serif; }
+    button { background:#111827; color:#e6edf3; border:1px solid #374151; border-radius:10px; padding:8px 10px; margin-right:8px; }
+    pre { background:#0d1117; border:1px solid #1f2937; border-radius:12px; padding:10px; overflow:auto; max-height: 48vh; }
+    .muted { color:#94a3b8; font-size: 12px; }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h2 style="margin:0 0 6px 0;">GPS Game Debug</h2>
-    <div class="muted" style="margin-bottom:10px;">Live state + last telemetry. For circle spawner: <a href="/circles">/circles</a></div>
-
-    <div class="row" style="margin-bottom:10px;">
-      <button id="btnTelemetry">Refresh telemetry</button>
-      <button id="btnSpawn">Spawn 60 circles</button>
-      <button id="btnClear">Clear circles</button>
-      <span id="status" class="muted">Connecting…</span>
-    </div>
-
-    <div class="row" style="margin-bottom:10px;">
-      <div class="muted" id="counts"></div>
-    </div>
-
-    <h3 style="margin:12px 0 6px 0;">worldState</h3>
-    <pre id="state"></pre>
-
-    <h3 style="margin:12px 0 6px 0;">telemetry</h3>
-    <pre id="telemetry"></pre>
-  </div>
+  <h2 style="margin-top:0;">GPS Game Debug</h2>
+  <div class="muted">Privacy refactor build. Players publish normalized meters only. Helper daemons can create and react to world objects.</div>
+  <p>
+    <button id="refresh">Refresh Telemetry</button>
+    <button id="stateBtn">Refresh State</button>
+  </p>
+  <div class="muted" id="status">Connecting…</div>
+  <h3>worldState</h3>
+  <pre id="state">{}</pre>
+  <h3>telemetry</h3>
+  <pre id="telem">[]</pre>
 
   <script>
+    const socket = io({ transports: ['websocket', 'polling'], auth: { role: 'daemon', daemonType: 'debug', label: 'debug-console' } });
     const statusEl = document.getElementById('status');
-    const countsEl = document.getElementById('counts');
     const stateEl = document.getElementById('state');
-    const telemEl = document.getElementById('telemetry');
+    const telemEl = document.getElementById('telem');
 
-    const socket = io({ transports: ['websocket','polling'] });
-
-    let lastState = null;
-    let myDeleted = 0;
-
-    function renderCounts() {
-      const users = lastState?.clients ? Object.keys(lastState.clients).length : 0;
-      const cubes = lastState?.droppedBlocks ? lastState.droppedBlocks.length : 0;
-      const circles = lastState?.circles ? lastState.circles.length : 0;
-      countsEl.textContent = `Users: ${users} | Cubes: ${cubes} | Circles: ${circles} | MyDeleted: ${myDeleted}`;
-    }
-
-    socket.on('connect', () => {
-      statusEl.textContent = 'Connected';
-    });
-
-    socket.on('worldState', (s) => {
-      lastState = s;
-      stateEl.textContent = JSON.stringify(s, null, 2);
-      renderCounts();
-    });
-
-    socket.on('myCounters', (c) => {
-      myDeleted = c?.deletedCubes ?? myDeleted;
-      renderCounts();
-    });
+    socket.on('connect', () => statusEl.textContent = 'Connected');
+    socket.on('worldState', (state) => stateEl.textContent = JSON.stringify(state, null, 2));
 
     async function refreshTelemetry() {
-      try {
-        const r = await fetch('/debug/telemetry');
-        const j = await r.json();
-        telemEl.textContent = JSON.stringify(j, null, 2);
-      } catch (e) {
-        telemEl.textContent = String(e);
-      }
+      const r = await fetch('/debug/telemetry');
+      telemEl.textContent = JSON.stringify(await r.json(), null, 2);
     }
 
-    document.getElementById('btnTelemetry').addEventListener('click', refreshTelemetry);
-    document.getElementById('btnSpawn').addEventListener('click', () => socket.emit('spawnCircles', { count: 60, radius: 80 }));
-    document.getElementById('btnClear').addEventListener('click', () => socket.emit('clearCircles'));
+    async function refreshState() {
+      const r = await fetch('/debug/state');
+      stateEl.textContent = JSON.stringify(await r.json(), null, 2);
+    }
 
+    document.getElementById('refresh').addEventListener('click', refreshTelemetry);
+    document.getElementById('stateBtn').addEventListener('click', refreshState);
     refreshTelemetry();
+    refreshState();
   </script>
 </body>
 </html>
