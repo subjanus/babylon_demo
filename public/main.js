@@ -18,14 +18,34 @@ const socket = io({
 });
 
 const worldRoot = new BABYLON.TransformNode("worldRoot", scene);
-const groundRing = BABYLON.MeshBuilder.CreateTorus("horizonRing", { diameter: 18, thickness: 0.05, tessellation: 64 }, scene);
-const ringMat = new BABYLON.StandardMaterial("ringMat", scene);
-ringMat.emissiveColor = new BABYLON.Color3(0.3, 0.6, 1.0);
-ringMat.alpha = 0.4;
-groundRing.material = ringMat;
-groundRing.rotation.x = Math.PI / 2;
-groundRing.position.y = -2.4;
-groundRing.parent = camera;
+const horizonRoot = new BABYLON.TransformNode("horizonRoot", scene);
+const horizonRing = BABYLON.MeshBuilder.CreateTorus("horizonRing", { diameter: 18, thickness: 0.06, tessellation: 96 }, scene);
+const horizonMat = new BABYLON.StandardMaterial("horizonMat", scene);
+horizonMat.emissiveColor = new BABYLON.Color3(0.3, 0.6, 1.0);
+horizonMat.alpha = 0.55;
+horizonMat.disableLighting = true;
+horizonRing.material = horizonMat;
+horizonRing.rotation.x = Math.PI / 2;
+horizonRing.parent = horizonRoot;
+
+const northTick = BABYLON.MeshBuilder.CreateCylinder("northTick", { height: 0.85, diameterTop: 0.0, diameterBottom: 0.35, tessellation: 12 }, scene);
+const northMat = new BABYLON.StandardMaterial("northMat", scene);
+northMat.emissiveColor = new BABYLON.Color3(1.0, 0.35, 0.2);
+northMat.alpha = 0.92;
+northMat.disableLighting = true;
+northTick.material = northMat;
+northTick.rotation.z = Math.PI / 2;
+northTick.position.set(0, 0, -9.4);
+northTick.parent = horizonRoot;
+
+const eastTick = BABYLON.MeshBuilder.CreateBox("eastTick", { width: 0.18, height: 0.18, depth: 0.9 }, scene);
+const eastMat = new BABYLON.StandardMaterial("eastMat", scene);
+eastMat.emissiveColor = new BABYLON.Color3(0.4, 0.85, 1.0);
+eastMat.alpha = 0.65;
+eastMat.disableLighting = true;
+eastTick.material = eastMat;
+eastTick.position.set(9, 0, 0);
+eastTick.parent = horizonRoot;
 
 let followMe = true;
 let lockNorth = false;
@@ -163,6 +183,13 @@ function maybeSendOrientationUpdate() {
   lastYawSentAt = now;
   socket.emit("orientationUpdate", { yaw });
 }
+function updateLocalHorizon() {
+  const q = camera.rotationQuaternion;
+  const yaw = q ? q.toEulerAngles().y : (camera.rotation?.y || 0);
+  horizonRoot.position.set(camera.position.x, camera.position.y - 2.15, camera.position.z);
+  horizonRoot.rotation.set(0, -yaw, 0);
+}
+
 function applyHeadingStabilization() {
   if (!lockNorth) {
     worldRoot.rotation.y = 0;
@@ -729,6 +756,7 @@ socket.on("worldState", (state) => {
 engine.runRenderLoop(() => {
   applyHeadingStabilization();
   maybeSendOrientationUpdate();
+  updateLocalHorizon();
   updateSelectionHUD();
   scene.render();
 });
