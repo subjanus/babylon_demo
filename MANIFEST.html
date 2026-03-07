@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MANIFEST.html</title>
+  <style>
+    :root{
+      --bg:#0b1220;
+      --panel:#111a2b;
+      --panel2:#0f1726;
+      --text:#e8eefc;
+      --muted:#a9b7d3;
+      --accent:#7cc4ff;
+      --accent2:#8ef0c8;
+      --border:#22314d;
+      --code:#0a1020;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: linear-gradient(180deg, #09101c 0%, #0b1220 100%);
+      color:var(--text);
+      line-height:1.55;
+    }
+    .wrap{
+      max-width:980px;
+      margin:0 auto;
+      padding:40px 20px 80px;
+    }
+    .hero{
+      background:linear-gradient(180deg, rgba(124,196,255,.12), rgba(142,240,200,.05));
+      border:1px solid var(--border);
+      border-radius:22px;
+      padding:28px 28px 22px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+      margin-bottom:24px;
+    }
+    h1,h2,h3{line-height:1.15;margin:0 0 14px}
+    h1{font-size:2.2rem}
+    h2{
+      margin-top:34px;
+      font-size:1.45rem;
+      padding-bottom:10px;
+      border-bottom:1px solid var(--border);
+    }
+    h3{margin-top:20px;font-size:1.08rem;color:var(--accent2)}
+    p, li{color:var(--text)}
+    .sub{color:var(--muted); font-size:.98rem}
+    .card{
+      background:rgba(17,26,43,.8);
+      border:1px solid var(--border);
+      border-radius:18px;
+      padding:20px 22px;
+      margin:18px 0;
+    }
+    ul{padding-left:22px}
+    li{margin:6px 0}
+    code, pre{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    code{
+      background:var(--code);
+      border:1px solid var(--border);
+      border-radius:8px;
+      padding:2px 7px;
+      color:#d9e8ff;
+    }
+    pre{
+      background:var(--code);
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:14px 16px;
+      overflow:auto;
+      color:#d9e8ff;
+    }
+    .grid{
+      display:grid;
+      grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+      gap:14px;
+      margin:16px 0;
+    }
+    .mini{
+      background:var(--panel2);
+      border:1px solid var(--border);
+      border-radius:16px;
+      padding:16px;
+    }
+    .mini strong{
+      display:block;
+      color:var(--accent);
+      margin-bottom:8px;
+    }
+    .pill{
+      display:inline-block;
+      padding:7px 11px;
+      border-radius:999px;
+      border:1px solid var(--border);
+      background:#0d1628;
+      color:var(--muted);
+      margin:4px 6px 0 0;
+      font-size:.92rem;
+    }
+    .footer{
+      margin-top:40px;
+      color:var(--muted);
+      font-size:.94rem;
+      text-align:center;
+    }
+    a{color:var(--accent)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>GPS Babylon Socket World</h1>
+      <h2 style="border:none; margin:8px 0 10px; padding:0; font-size:1.2rem; color:var(--accent2)">Project Manifest</h2>
+      <p><span class="pill">Snapshot: Persistent World + Anchor Privacy + Circle Daemon + Cleanup Daemon + Local Horizon</span>
+      <span class="pill">Generated: 2026-03-07</span></p>
+      <p class="sub">A browser-based multiplayer spatial sandbox using Node.js, Socket.IO, Babylon.js, mobile GPS, and device orientation.</p>
+    </section>
+
+    <section class="card">
+      <h2>Overview 🌍</h2>
+      <p>This project is a browser-based multiplayer spatial sandbox built with Node.js + Express, Socket.IO, Babylon.js, and mobile GPS + device orientation.</p>
+      <p>The system allows multiple users to inhabit a shared coordinate world while keeping raw GPS data private through an anchor-relative coordinate system.</p>
+      <div class="grid">
+        <div class="mini"><strong>Players</strong>Walk in the real world, see one another, and place objects.</div>
+        <div class="mini"><strong>Server</strong>Maintains shared world state and distributes updates.</div>
+        <div class="mini"><strong>Daemons</strong>Authenticated helper services that create, destroy, or react to world objects.</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Core Architecture 🧭</h2>
+      <pre>Clients (players)
+        │
+        │  Socket.IO
+        ▼
+Server (world broker)
+        │
+        │
+        ▼
+Daemons (helper services)</pre>
+      <p><strong>Clients</strong> render the world and send relative movement updates.</p>
+      <p><strong>Server</strong> maintains world state and distributes updates.</p>
+      <p><strong>Daemons</strong> are authenticated helper agents that can create and manage objects or respond to triggers.</p>
+    </section>
+
+    <section class="card">
+      <h2>Privacy Model 🔐</h2>
+      <p>The project implements a privacy-preserving location system. Clients do not transmit raw GPS coordinates directly as world position.</p>
+      <p>Instead, each client chooses an anchor coordinate using this format:</p>
+      <pre>lat,lon</pre>
+      <p>Example value:</p>
+      <pre>35.9940,-78.8986</pre>
+      <p>The client calculates its offset from that anchor and transmits only:</p>
+      <ul>
+        <li>anchor coordinate</li>
+        <li>relative X/Z distance from anchor</li>
+        <li>orientation/heading</li>
+        <li>object placement offsets</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>Anchor Worlds 🌐</h2>
+      <p>Worlds are implicitly defined by anchor coordinates. Clients only see players using the same anchor and objects created under the same anchor.</p>
+      <p>Different anchors effectively create separate parallel worlds.</p>
+    </section>
+
+    <section class="card">
+      <h2>Server Responsibilities ⚙️</h2>
+      <p>Main file: <code>server/index.js</code></p>
+      <ul>
+        <li>hosts static client files</li>
+        <li>manages Socket.IO connections</li>
+        <li>tracks connected clients</li>
+        <li>stores world objects</li>
+        <li>authenticates daemon clients</li>
+        <li>relays trigger events</li>
+        <li>distributes world updates</li>
+      </ul>
+      <h3>World State Storage</h3>
+      <p>In the current version, world objects persist across disconnects and remain until explicitly deleted, wiped by the cleanup daemon, or lost on server restart. State is stored in memory only.</p>
+    </section>
+
+    <section class="card">
+      <h2>Client Responsibilities 🎮</h2>
+      <p>Main files: <code>public/index.html</code> and <code>public/main.js</code></p>
+      <ul>
+        <li>obtains GPS locally</li>
+        <li>calculates anchor-relative position</li>
+        <li>transmits relative movement</li>
+        <li>renders other players</li>
+        <li>renders world objects</li>
+        <li>allows cube/object placement</li>
+        <li>allows proximity deletion</li>
+        <li>emits trigger events</li>
+        <li>manages Field Kit UI</li>
+        <li>renders a local orientation horizon</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>Field Kit UI 🧰</h2>
+      <p>The Babylon GUI “Field Kit” provides in-game controls for anchor entry, anchor paste support, object placement, color/object controls, permission handling, and world interaction tools.</p>
+    </section>
+
+    <section class="card">
+      <h2>Anchor Entry System 📍</h2>
+      <p>Anchor entry was simplified from two fields to a single input:</p>
+      <pre>lat,lon</pre>
+      <p>Example:</p>
+      <pre>35.9940,-78.8986</pre>
+      <p>The client also supports pasting coordinates directly from clipboard, which makes mobile use much easier.</p>
+    </section>
+
+    <section class="card">
+      <h2>Movement Model 🚶</h2>
+      <p>The client calculates movement as:</p>
+      <pre>relative position = GPS − anchor</pre>
+      <p>The resulting offset is used for player rendering, world updates, object placement, and interaction logic. This allows cubes and objects to remain fixed in world space while players move.</p>
+    </section>
+
+    <section class="card">
+      <h2>Local Horizon Ring 🧭</h2>
+      <p>The client renders a local orientation ring that is client-only, not synchronized to the server, not transmitted to other players, and follows local player position.</p>
+      <p>It serves as an orientation aid and heading reference. The ring lies in the horizontal plane around the player and includes small directional markers.</p>
+    </section>
+
+    <section class="card">
+      <h2>Object System 🧱</h2>
+      <p>The project now supports a generic world object model. Previously the world only supported dropped cubes.</p>
+      <p>World objects can include:</p>
+      <ul>
+        <li>position</li>
+        <li>anchor association</li>
+        <li>object type</li>
+        <li>visual properties</li>
+        <li>trigger properties</li>
+        <li>ownership</li>
+        <li>metadata</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>Trigger System ⚡</h2>
+      <p>Objects may optionally contain trigger definitions such as proximity or interaction triggers.</p>
+      <pre>player interaction
+      ↓
+client emits trigger
+      ↓
+server relays trigger
+      ↓
+daemon reacts</pre>
+      <p>This enables daemon-driven mechanics without embedding all game logic directly into the main client.</p>
+    </section>
+
+    <section class="card">
+      <h2>Daemon Model 🤖</h2>
+      <p>Daemons are special authenticated clients that can read world state, create objects, destroy objects, respond to triggers, and implement world mechanics.</p>
+
+      <h3>Circle Daemon</h3>
+      <p>File: <code>public/circles.html</code><br />Auth cue: <code>server/circle-auth.txt</code></p>
+      <p>The Circle Daemon can authenticate using its cue, create objects, react to triggers, spawn helper elements, and manage world mechanics.</p>
+
+      <h3>Cleanup Daemon 🧹</h3>
+      <p>File: <code>public/cleanup.html</code><br />Auth cue: <code>server/cleanup-auth.txt</code></p>
+      <p>The Cleanup Daemon allows controlled world resets and acts as a maintenance/admin tool. Wipe operations require deliberate confirmation.</p>
+    </section>
+
+    <section class="card">
+      <h2>Persistence Behavior 🧠</h2>
+      <p>Objects persist across client disconnects and remain until manually deleted, removed by daemon, wiped, or lost on server restart.</p>
+      <p>This prevents objects from disappearing during brief mobile reconnects.</p>
+    </section>
+
+    <section class="card">
+      <h2>Major Changes In This Version 📜</h2>
+      <ul>
+        <li><strong>Anchor-Relative Privacy Model:</strong> clients now compute and transmit relative coordinates instead of raw GPS world position.</li>
+        <li><strong>Simplified Anchor Input:</strong> anchor entry changed to a single <code>lat,lon</code> field.</li>
+        <li><strong>Clipboard Anchor Support:</strong> users can paste coordinates directly from maps or messages.</li>
+        <li><strong>Local Horizon Ring:</strong> a client-side orientation ring was added and corrected to the horizontal plane.</li>
+        <li><strong>Follow Behavior Correction:</strong> client follow logic now prioritizes live local position rather than server echo.</li>
+        <li><strong>Expanded Object System:</strong> objects are now generalized rather than cube-only.</li>
+        <li><strong>Circle Daemon Added:</strong> authenticated daemon for object creation and trigger experimentation.</li>
+        <li><strong>Cleanup Daemon Added:</strong> authenticated world maintenance daemon.</li>
+        <li><strong>Disconnect Object Deletion Removed:</strong> objects are no longer destroyed when player sockets disconnect.</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>Known Limitations ⚠️</h2>
+      <ul>
+        <li><strong>No Disk Persistence:</strong> world state is not yet saved to disk.</li>
+        <li><strong>Lightweight Authentication:</strong> daemon authentication is cue-based and not hardened.</li>
+        <li><strong>GPS Accuracy Variance:</strong> movement quality depends on device GPS accuracy.</li>
+        <li><strong>Early Object System:</strong> the architecture supports more object types than are currently polished.</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>Recommended Future Upgrades 🚀</h2>
+      <ul>
+        <li>disk-backed world persistence</li>
+        <li>object editing/updating</li>
+        <li>billboard/image objects</li>
+        <li>server-side trigger subscriptions</li>
+        <li>saved named anchors/worlds</li>
+        <li>player identity beyond socket ID</li>
+        <li>advanced daemon services</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>Snapshot Label Suggestion 🏷️</h2>
+      <pre>Anchor Privacy + Persistent World + Circle Daemon + Cleanup Daemon + Local Horizon</pre>
+    </section>
+
+    <p class="footer">Prepared for project snapshotting ✨</p>
+  </div>
+</body>
+</html>
