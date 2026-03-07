@@ -1,156 +1,270 @@
-// public/main.js
-// Telemetry logging patch:
-// - Emits telemetry on GPS samples + drops so you can inspect from a Mac via /debug/telemetry
-// - Does NOT change gameplay logic
-
 import { initScene } from "./initScene.js";
 import { initCamera } from "./initCamera.js";
 import { requestDevicePermissions } from "./requestPermissions.js";
-import { initBox } from "./initBox.js";
 
-// --- UI ---
 const canvas = document.getElementById("renderCanvas");
 const statusEl = document.getElementById("status");
-const btnPerm  = document.getElementById("btnPerm");
-const btnNorth = document.getElementById("btnNorth");
-const btnColor = document.getElementById("btnColor");
-const btnDrop  = document.getElementById("btnDrop");
 
-// Follow mode: keep local player centered under the camera
-let followMe = true;
-let sharedAnchor = { lat: 0, lon: 0 };
-
-function ensureFollowButton() {
-  // If HTML doesn't have it yet, create it (keeps this patch compatible with older index.html)
-  const hudButtons = document.getElementById("buttons");
-  if (!hudButtons) return;
-
-  let btn = document.getElementById("btnFollow");
-  if (!btn) {
-    btn = document.createElement("button");
-    btn.id = "btnFollow";
-    btn.textContent = "Follow: On";
-    hudButtons.insertBefore(btn, hudButtons.firstChild);
-  }
-
-  btn.addEventListener("click", () => {
-    followMe = !followMe;
-    btn.textContent = followMe ? "Follow: On" : "Follow: Off";
-    emitTelemetry("ui", { action: "followMe", followMe });
-    if (!followMe) {
-      worldRoot.position.x = 0;
-      worldRoot.position.z = 0;
-    }
-  });
-}
-
-
-
-// Selection UI + delete action (created dynamically so we don't have to change index.html)
-let selectionEl = null;
-let btnDelete = null;
-
-function ensureSelectionUI() {
-  // Selection line: placed right under #status if possible
-  if (!selectionEl && statusEl && statusEl.parentElement) {
-    selectionEl = document.getElementById("selection");
-    if (!selectionEl) {
-      selectionEl = document.createElement("div");
-      selectionEl.id = "selection";
-      selectionEl.style.fontSize = "12px";
-      selectionEl.style.lineHeight = "1.3";
-      selectionEl.style.opacity = "0.9";
-      selectionEl.style.marginTop = "2px";
-      selectionEl.textContent = "Selected: none";
-      statusEl.parentElement.insertBefore(selectionEl, statusEl.nextSibling);
-    }
-  }
-
-  // Delete button: appears in the button row
-  const hudButtons = document.getElementById("buttons");
-  if (hudButtons && !btnDelete) {
-    btnDelete = document.getElementById("btnDelete");
-    if (!btnDelete) {
-      btnDelete = document.createElement("button");
-      btnDelete.id = "btnDelete";
-      btnDelete.textContent = "Delete";
-      btnDelete.disabled = true;
-      hudButtons.appendChild(btnDelete);
-    }
-  }
-}
-
-
-// --- Babylon ---
 const { engine, scene } = initScene(canvas);
 const camera = initCamera(scene, canvas);
+camera.position.y = 2.4;
 
+const socket = io({
+  path: "/socket.io",
+  transports: ["websocket", "polling"],
+  reconnection: true,
+  reconnectionAttempts: 10,
+  reconnectionDelay: 800
+});
 
-
-// A root node for world objects (lets us optionally stabilize heading by rotating the world).
 const worldRoot = new BABYLON.TransformNode("worldRoot", scene);
+const groundRing = BABYLON.MeshBuilder.CreateTorus("horizonRing", { diameter: 18, thickness: 0.05, tessellation: 64 }, scene);
+const ringMat = new BABYLON.StandardMaterial("ringMat", scene);
+ringMat.emissiveColor = new BABYLON.Color3(0.3, 0.6, 1.0);
+ringMat.alpha = 0.4;
+groundRing.material = ringMat;
+groundRing.rotation.x = Math.PI / 2;
+groundRing.position.y = -2.4;
+groundRing.parent = camera;
 
-
-
-// --- In-canvas Drawer UI (Babylon GUI) ---
-let ui = null;
+let followMe = true;
+let lockNorth = false;
+let yawZero = 0;
+let yawSmoothed = 0;
+let lastYawSent = null;
+let lastYawSentAt = 0;
+let lastTelemAt = 0;
+let myDeletedCount = 0;
+let lastWorldState = null;
+let selectedMesh = null;
+let selectedObjectId = null;
+let selectedLabel = "none";
+let selectedKind = null;
+let selectedRel = null;
+let highlight = null;
 let uiStatusText = null;
 let uiCountsText = null;
 let uiSelectedText = null;
 let uiDeleteBtn = null;
+let anchorLatInput = null;
+let anchorLonInput = null;
+let anchorSummaryText = null;
+let bFollow = null;
+let bNorth = null;
+
+const YAW_ALPHA = 0.08;
+const YAW_SEND_MIN_MS = 120;
+const YAW_SEND_MIN_DELTA = 0.03;
+const GPS_ALPHA = 0.12;
+const SEND_MIN_MS = 350;
+const DEAD_BAND_M = 1.8;
+const TELEMETRY_MIN_MS = 500;
+const SELECT_DELETE_RANGE_M = 8;
+const DROPPED_CUBE_Y = -1;
+const PLAYER_POINTER_Y = 0.6;
+const ANCHOR_KEY = "fieldkit.anchor.v1";
+
+let anchorLat = 0;
+let anchorLon = 0;
+let anchorKey = "0.000000,0.000000";
+let rawLat = null, rawLon = null;
+let filtLat = null, filtLon = null;
+let lastSentRelX = null, lastSentRelZ = null, lastSentAt = 0;
+
+const playerPointers = {};
+const objectMeshes = {};
+const triggerMemory = new Map();
+
+try { highlight = new BABYLON.HighlightLayer("hl", scene); } catch (_) { highlight = null; }
+
+function isNumber(n) { return typeof n === "number" && Number.isFinite(n); }
+function shortId(id) { return String(id || "").slice(-4); }
+function normAnchor(lat, lon) {
+  const aLat = Number(lat);
+  const aLon = Number(lon);
+  return {
+    lat: Number.isFinite(aLat) ? aLat : 0,
+    lon: Number.isFinite(aLon) ? aLon : 0,
+    key: `${(Number.isFinite(aLat) ? aLat : 0).toFixed(6)},${(Number.isFinite(aLon) ? aLon : 0).toFixed(6)}`
+  };
+}
+function metersPerDegLonAt(lat) { return 111320 * Math.cos(lat * Math.PI / 180); }
+function latLonToRel(lat, lon, aLat = anchorLat, aLon = anchorLon) {
+  const dLat = lat - aLat;
+  const dLon = lon - aLon;
+  return { x: dLon * metersPerDegLonAt(aLat), z: dLat * 111320 };
+}
+function relDist(a, b) { return Math.hypot((a.x || 0) - (b.x || 0), (a.z || 0) - (b.z || 0)); }
+function currentRel() {
+  const lat = isNumber(filtLat) ? filtLat : rawLat;
+  const lon = isNumber(filtLon) ? filtLon : rawLon;
+  if (!isNumber(lat) || !isNumber(lon)) return null;
+  return latLonToRel(lat, lon);
+}
+function setStatus(s) {
+  if (statusEl) statusEl.textContent = s;
+  if (uiStatusText) uiStatusText.text = s;
+}
+function setCounts(users, objects, deleted) {
+  if (uiCountsText) uiCountsText.text = `Users: ${users} | Objects: ${objects} | Deleted: ${deleted}`;
+}
+function setSelected(s, canDelete = false) {
+  if (uiSelectedText) uiSelectedText.text = s;
+  if (uiDeleteBtn) {
+    uiDeleteBtn.isEnabled = !!canDelete;
+    uiDeleteBtn.alpha = canDelete ? 1 : 0.5;
+  }
+}
+function saveAnchor() {
+  localStorage.setItem(ANCHOR_KEY, JSON.stringify({ lat: anchorLat, lon: anchorLon }));
+}
+function loadAnchor() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(ANCHOR_KEY) || "null");
+    if (raw && Number.isFinite(Number(raw.lat)) && Number.isFinite(Number(raw.lon))) {
+      const n = normAnchor(raw.lat, raw.lon);
+      anchorLat = n.lat; anchorLon = n.lon; anchorKey = n.key;
+    }
+  } catch (_) {}
+}
+function applyAnchor(lat, lon) {
+  const n = normAnchor(lat, lon);
+  anchorLat = n.lat; anchorLon = n.lon; anchorKey = n.key;
+  if (anchorLatInput) anchorLatInput.text = String(anchorLat);
+  if (anchorLonInput) anchorLonInput.text = String(anchorLon);
+  if (anchorSummaryText) anchorSummaryText.text = `Anchor: ${anchorLat.toFixed(6)}, ${anchorLon.toFixed(6)}`;
+  saveAnchor();
+  sendGpsNow();
+}
+
+function getCameraYawRad() {
+  const q = camera.rotationQuaternion;
+  if (!q) return camera.rotation?.y || 0;
+  const ysqr = q.y * q.y;
+  const t3 = 2.0 * (q.w * q.y + q.x * q.z);
+  const t4 = 1.0 - 2.0 * (ysqr + q.z * q.z);
+  return Math.atan2(t3, t4);
+}
+function normalizeAngleRad(a) {
+  while (a > Math.PI) a -= 2 * Math.PI;
+  while (a < -Math.PI) a += 2 * Math.PI;
+  return a;
+}
+function maybeSendOrientationUpdate() {
+  if (!socket.connected) return;
+  const now = Date.now();
+  if (now - lastYawSentAt < YAW_SEND_MIN_MS) return;
+  const yaw = getCameraYawRad();
+  if (lastYawSent !== null) {
+    const d = normalizeAngleRad(yaw - lastYawSent);
+    if (Math.abs(d) < YAW_SEND_MIN_DELTA) return;
+  }
+  lastYawSent = yaw;
+  lastYawSentAt = now;
+  socket.emit("orientationUpdate", { yaw });
+}
+function applyHeadingStabilization() {
+  if (!lockNorth) {
+    worldRoot.rotation.y = 0;
+    return;
+  }
+  const yaw = getCameraYawRad();
+  const delta = normalizeAngleRad(yaw - yawSmoothed);
+  yawSmoothed = normalizeAngleRad(yawSmoothed + delta * YAW_ALPHA);
+  worldRoot.rotation.y = -(yawSmoothed - yawZero);
+}
+function emitTelemetry(kind, extra = {}) {
+  const now = Date.now();
+  if (now - lastTelemAt < TELEMETRY_MIN_MS && (kind === "gps" || kind === "state")) return;
+  lastTelemAt = now;
+  socket.emit("telemetry", {
+    kind,
+    anchorKey,
+    anchorLat,
+    anchorLon,
+    rel: currentRel(),
+    raw: isNumber(rawLat) && isNumber(rawLon) ? { lat: rawLat, lon: rawLon } : null,
+    extra
+  });
+}
+
+function mkInput(stack, id, labelText, initialText) {
+  const label = new BABYLON.GUI.TextBlock(id + "Label", labelText);
+  label.height = "18px";
+  label.fontSize = 12;
+  label.color = "#cbd5e1";
+  label.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+  stack.addControl(label);
+
+  const input = new BABYLON.GUI.InputText(id);
+  input.width = "100%";
+  input.height = "34px";
+  input.background = "#111827";
+  input.color = "#e6edf3";
+  input.focusedBackground = "#0f172a";
+  input.thickness = 1;
+  input.cornerRadius = 10;
+  input.text = initialText;
+  input.maxWidth = 1;
+  stack.addControl(input);
+  return input;
+}
+
+function mkButton(stack, id, label, onClick) {
+  const b = BABYLON.GUI.Button.CreateSimpleButton(id, label);
+  b.width = "100%";
+  b.height = "40px";
+  b.color = "#e6edf3";
+  b.background = "#111827";
+  b.thickness = 1;
+  b.cornerRadius = 12;
+  b.paddingTop = "6px";
+  b.isPointerBlocker = true;
+  b.onPointerUpObservable.add(() => onClick(b));
+  stack.addControl(b);
+  return b;
+}
 
 function createDrawerUI() {
-  if (!BABYLON.GUI) {
-    console.warn("Babylon GUI not loaded; falling back to HTML HUD.");
-    return null;
-  }
+  const adt = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("ui", true, scene);
 
-  const adt = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("drawerUI", true, scene);
-
-  // Toggle button (hamburger)
-  const toggle = BABYLON.GUI.Button.CreateSimpleButton("btnDrawerToggle", "☰");
+  const toggle = BABYLON.GUI.Button.CreateSimpleButton("drawerToggle", "☰");
   toggle.width = "44px";
   toggle.height = "44px";
   toggle.color = "#e6edf3";
   toggle.background = "#111827";
-  toggle.thickness = 1;
   toggle.cornerRadius = 12;
-  toggle.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  toggle.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
+  toggle.thickness = 1;
   toggle.left = "10px";
   toggle.top = "10px";
-  toggle.isPointerBlocker = true;
+  toggle.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+  toggle.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
   adt.addControl(toggle);
 
-  // Drawer pane
-  const drawer = new BABYLON.GUI.Rectangle("drawerPane");
+  const drawer = new BABYLON.GUI.Rectangle("drawer");
   drawer.width = "340px";
-  drawer.height = "440px";
-  drawer.cornerRadius = 16;
+  drawer.height = "560px";
   drawer.thickness = 1;
-  drawer.color = "#374151";
-  drawer.background = "#0d1117";
-  drawer.alpha = 0.94;
+  drawer.cornerRadius = 16;
+  drawer.color = "#334155";
+  drawer.background = "#0b1220ee";
   drawer.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
   drawer.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
-  drawer.top = "10px";
   drawer.left = "-10px";
-  drawer.isVisible = false;
-  drawer.isPointerBlocker = true;
+  drawer.top = "10px";
+  drawer.isVisible = true;
   adt.addControl(drawer);
 
-  const root = new BABYLON.GUI.StackPanel("drawerStack");
+  const root = new BABYLON.GUI.StackPanel("drawerRoot");
+  root.width = 0.94;
   root.paddingTop = "10px";
-  root.paddingLeft = "12px";
-  root.paddingRight = "12px";
-  root.paddingBottom = "10px";
-  root.isPointerBlocker = true;
+  root.paddingLeft = "10px";
+  root.paddingRight = "10px";
   drawer.addControl(root);
 
-  const headerRow = new BABYLON.GUI.StackPanel("hdrRow");
+  const headerRow = new BABYLON.GUI.StackPanel("headerRow");
   headerRow.isVertical = false;
   headerRow.height = "34px";
-  headerRow.isPointerBlocker = true;
   root.addControl(headerRow);
 
   const title = new BABYLON.GUI.TextBlock("drawerTitle", "Field Kit");
@@ -169,7 +283,6 @@ function createDrawerUI() {
   close.thickness = 1;
   close.cornerRadius = 10;
   close.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
-  close.isPointerBlocker = true;
   headerRow.addControl(close);
 
   uiStatusText = new BABYLON.GUI.TextBlock("uiStatus", "Connecting…");
@@ -180,7 +293,7 @@ function createDrawerUI() {
   uiStatusText.textWrapping = true;
   root.addControl(uiStatusText);
 
-  uiCountsText = new BABYLON.GUI.TextBlock("uiCounts", "Users: 0 | Cubes: 0 | Deleted: 0");
+  uiCountsText = new BABYLON.GUI.TextBlock("uiCounts", "Users: 0 | Objects: 0 | Deleted: 0");
   uiCountsText.color = "#cbd5e1";
   uiCountsText.fontSize = 12;
   uiCountsText.height = "28px";
@@ -191,8 +304,8 @@ function createDrawerUI() {
   uiSelectedText.color = "#cbd5e1";
   uiSelectedText.fontSize = 12;
   uiSelectedText.height = "40px";
-  uiSelectedText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
   uiSelectedText.textWrapping = true;
+  uiSelectedText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
   root.addControl(uiSelectedText);
 
   const sep = new BABYLON.GUI.Rectangle("sep");
@@ -201,216 +314,171 @@ function createDrawerUI() {
   sep.background = "#1f2937";
   root.addControl(sep);
 
-  function mkButton(id, label, onClick) {
-    const b = BABYLON.GUI.Button.CreateSimpleButton(id, label);
-    b.width = "100%";
-    b.height = "40px";
-    b.color = "#e6edf3";
-    b.background = "#111827";
-    b.thickness = 1;
-    b.cornerRadius = 12;
-    b.paddingTop = "6px";
-    b.isPointerBlocker = true;
-    b.onPointerUpObservable.add(() => onClick(b));
-    root.addControl(b);
-    return b;
-  }
+  anchorSummaryText = new BABYLON.GUI.TextBlock("anchorSummary", "Anchor: 0.000000, 0.000000");
+  anchorSummaryText.color = "#93c5fd";
+  anchorSummaryText.fontSize = 12;
+  anchorSummaryText.height = "24px";
+  anchorSummaryText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+  root.addControl(anchorSummaryText);
 
-  const bFollow = mkButton("uiFollow", "Follow: On", () => {
+  anchorLatInput = mkInput(root, "anchorLatInput", "Anchor Latitude", String(anchorLat));
+  anchorLonInput = mkInput(root, "anchorLonInput", "Anchor Longitude", String(anchorLon));
+
+  mkButton(root, "uiSetAnchor", "Set Anchor", () => {
+    applyAnchor(Number(anchorLatInput.text), Number(anchorLonInput.text));
+    emitTelemetry("ui", { action: "setAnchor", anchorLat, anchorLon });
+  });
+
+  mkButton(root, "uiUseGpsAnchor", "Use My GPS as Anchor", () => {
+    if (isNumber(rawLat) && isNumber(rawLon)) {
+      applyAnchor(rawLat, rawLon);
+      emitTelemetry("ui", { action: "useGpsAnchor", anchorLat, anchorLon });
+    }
+  });
+
+  bFollow = mkButton(root, "uiFollow", "Follow: On", () => {
     followMe = !followMe;
     bFollow.textBlock.text = followMe ? "Follow: On" : "Follow: Off";
-    emitTelemetry("ui", { action: "followMe", followMe });
     if (!followMe) {
       worldRoot.position.x = 0;
       worldRoot.position.z = 0;
     }
   });
 
-  const bNorth = mkButton("uiNorth", "Lock North: Off", () => {
+  bNorth = mkButton(root, "uiNorth", "Lock North: Off", () => {
     lockNorth = !lockNorth;
     yawSmoothed = getCameraYawRad();
     yawZero = yawSmoothed;
     bNorth.textBlock.text = lockNorth ? "Lock North: On" : "Lock North: Off";
-    emitTelemetry("ui", { action: "lockNorth", lockNorth });
   });
 
-  const bPerm = mkButton("uiPerm", "Enable Motion", async () => {
+  mkButton(root, "uiPerm", "Enable Motion", async (btn) => {
     const ok = await requestDevicePermissions();
-    bPerm.textBlock.text = ok ? "Motion Enabled" : "Motion Blocked";
-    emitTelemetry("ui", { action: "perm", ok });
+    btn.textBlock.text = ok ? "Motion Enabled" : "Motion Blocked";
   });
 
-  mkButton("uiColor", "Toggle Color", () => {
-    socket.emit("toggleColor");
-    emitTelemetry("ui", { action: "toggleColor" });
-  });
-
-  mkButton("uiDrop", "Drop Cube", () => {
-    const rel = getCurrentRelativePosition();
+  mkButton(root, "uiColor", "Toggle Color", () => socket.emit("toggleColor"));
+  mkButton(root, "uiDrop", "Drop Cube", () => {
+    const rel = currentRel();
     if (!rel) return;
-    socket.emit("dropCube", { anchorLat: sharedAnchor.lat, anchorLon: sharedAnchor.lon, relX: rel.x, relZ: rel.z });
-    emitTelemetry("drop", { anchor: sharedAnchor, rel });
+    socket.emit("dropCube", { anchorLat, anchorLon, relX: rel.x, relY: 0, relZ: rel.z });
+    emitTelemetry("drop", { relX: rel.x, relZ: rel.z });
   });
 
-  const anchorLabel = new BABYLON.GUI.TextBlock('anchorLabel', 'Anchor (lat, lon)');
-  anchorLabel.color = '#cbd5e1';
-  anchorLabel.fontSize = 12;
-  anchorLabel.height = '22px';
-  anchorLabel.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  root.addControl(anchorLabel);
-
-  const anchorRow = new BABYLON.GUI.StackPanel('anchorRow');
-  anchorRow.isVertical = false;
-  anchorRow.height = '40px';
-  anchorRow.isPointerBlocker = true;
-  root.addControl(anchorRow);
-
-  const anchorLatInput = new BABYLON.GUI.InputText('anchorLatInput', String(sharedAnchor.lat ?? 0));
-  anchorLatInput.width = '48%';
-  anchorLatInput.maxWidth = '48%';
-  anchorLatInput.height = '40px';
-  anchorLatInput.color = '#e6edf3';
-  anchorLatInput.background = '#111827';
-  anchorLatInput.focusedBackground = '#111827';
-  anchorLatInput.thickness = 1;
-  anchorLatInput.cornerRadius = 10;
-  anchorLatInput.placeholderText = '0';
-  anchorLatInput.isPointerBlocker = true;
-  anchorRow.addControl(anchorLatInput);
-
-  const anchorLonInput = new BABYLON.GUI.InputText('anchorLonInput', String(sharedAnchor.lon ?? 0));
-  anchorLonInput.width = '48%';
-  anchorLonInput.maxWidth = '48%';
-  anchorLonInput.height = '40px';
-  anchorLonInput.color = '#e6edf3';
-  anchorLonInput.background = '#111827';
-  anchorLonInput.focusedBackground = '#111827';
-  anchorLonInput.thickness = 1;
-  anchorLonInput.cornerRadius = 10;
-  anchorLonInput.placeholderText = '0';
-  anchorLonInput.isPointerBlocker = true;
-  anchorRow.addControl(anchorLonInput);
-
-  const anchorHint = new BABYLON.GUI.TextBlock('anchorHint', 'Default 0,0. Everyone must use the same anchor to share a world.');
-  anchorHint.color = '#94a3b8';
-  anchorHint.fontSize = 11;
-  anchorHint.height = '38px';
-  anchorHint.textWrapping = true;
-  anchorHint.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  root.addControl(anchorHint);
-
-  mkButton('uiAnchorSet', 'Set Anchor', () => {
-    const lat = normalizeCoord(anchorLatInput.text, 0);
-    const lon = normalizeCoord(anchorLonInput.text, 0);
-    anchorLatInput.text = String(lat);
-    anchorLonInput.text = String(lon);
-    setSharedAnchor(lat, lon);
-  });
-
-  mkButton('uiAnchorUseMe', 'Use My GPS as Anchor', () => {
-    const fix = currentLatLon();
-    if (!fix) return;
-    anchorLatInput.text = String(fix.lat);
-    anchorLonInput.text = String(fix.lon);
-    setSharedAnchor(fix.lat, fix.lon);
-  });
-
-  window.__anchorInputs = { anchorLatInput, anchorLonInput };
-
-  uiDeleteBtn = mkButton("uiDelete", "Delete Selected", () => {
-    attemptDeleteSelected();
-  });
+  uiDeleteBtn = mkButton(root, "uiDelete", "Delete Selected", attemptDeleteSelected);
   uiDeleteBtn.isEnabled = false;
   uiDeleteBtn.alpha = 0.5;
 
-  function setOpen(open) {
-    drawer.isVisible = open;
-  }
+  const help = new BABYLON.GUI.TextBlock("helpText", "Privacy mode: only anchor + relative meters are transmitted. Raw GPS stays on the client.");
+  help.height = "70px";
+  help.textWrapping = true;
+  help.fontSize = 11;
+  help.color = "#94a3b8";
+  help.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+  root.addControl(help);
+
+  function setOpen(open) { drawer.isVisible = open; }
   toggle.onPointerUpObservable.add(() => setOpen(!drawer.isVisible));
   close.onPointerUpObservable.add(() => setOpen(false));
-
-  return { adt, drawer, toggle };
+  return { drawer, toggle };
 }
 
-ui = createDrawerUI();
-updateAnchorUI();
+const ui = createDrawerUI();
+loadAnchor();
+applyAnchor(anchorLat, anchorLon);
 
 function isPointerOverDrawerUI(evt) {
-  // Simple screen-space hit test to avoid breaking selection.
-  // Ignores clicks on the ☰ toggle (top-left) and the drawer pane when open (top-right).
   if (!evt) return false;
-
   const w = engine.getRenderWidth(true);
-
   const x = evt.clientX;
   const y = evt.clientY;
-
-  // Toggle button area (top-left)
-  const toggleLeft = 10, toggleTop = 10, toggleSize = 44;
-  const overToggle = (x >= toggleLeft && x <= toggleLeft + toggleSize && y >= toggleTop && y <= toggleTop + toggleSize);
-
-  // Drawer area (top-right) when visible
+  const overToggle = x >= 10 && x <= 54 && y >= 10 && y <= 54;
   let overDrawer = false;
   try {
-    const drawer = ui?.drawer;
-    if (drawer && drawer.isVisible) {
+    if (ui?.drawer?.isVisible) {
       const drawerWidth = 340;
-      const drawerHeight = 420;
+      const drawerHeight = 560;
       const margin = 10;
       const drawerLeft = w - (drawerWidth + margin);
       const drawerTop = margin;
-      overDrawer = (x >= drawerLeft && x <= w - margin && y >= drawerTop && y <= drawerTop + drawerHeight);
+      overDrawer = x >= drawerLeft && x <= w - margin && y >= drawerTop && y <= drawerTop + drawerHeight;
     }
   } catch (_) {}
-
   return overToggle || overDrawer;
 }
 
-
-function setUIStatus(s) {
-  if (statusEl) statusEl.textContent = s;
-  if (uiStatusText) uiStatusText.text = s;
+function ensurePlayerPointer(id, color) {
+  if (playerPointers[id]) return playerPointers[id];
+  const p = BABYLON.MeshBuilder.CreateCylinder(`playerPointer_${id}`, { diameterTop: 0, diameterBottom: 0.9, height: 1.6, tessellation: 4 }, scene);
+  const mat = new BABYLON.StandardMaterial(`playerPointerMat_${id}`, scene);
+  mat.diffuseColor = BABYLON.Color3.FromHexString(color || "#FFCC00");
+  mat.emissiveColor = BABYLON.Color3.FromHexString("#1f2937");
+  mat.specularColor = BABYLON.Color3.Black();
+  p.material = mat;
+  p.parent = worldRoot;
+  p.isPickable = true;
+  p.rotation.x = Math.PI / 2;
+  playerPointers[id] = p;
+  return p;
 }
 
-function setUICounts(users, cubes, deleted) {
-  if (uiCountsText) uiCountsText.text = `Users: ${users} | Cubes: ${cubes} | Deleted: ${deleted}`;
+function disposeObjectMesh(id) {
+  const mesh = objectMeshes[id];
+  if (!mesh) return;
+  if (selectedObjectId === Number(id) || selectedObjectId === String(id)) clearSelection();
+  try { mesh.dispose(); } catch (_) {}
+  delete objectMeshes[id];
 }
 
-function updateAnchorUI() {
-  const inputs = window.__anchorInputs;
-  if (inputs?.anchorLatInput) inputs.anchorLatInput.text = String(sharedAnchor.lat ?? 0);
-  if (inputs?.anchorLonInput) inputs.anchorLonInput.text = String(sharedAnchor.lon ?? 0);
-}
-
-function setUISelected(s, canDelete) {
-  if (selectionEl) selectionEl.textContent = s;
-  if (uiSelectedText) uiSelectedText.text = s;
-
-  const enabled = !!canDelete;
-  if (btnDelete) btnDelete.disabled = !enabled;
-  if (uiDeleteBtn) {
-    uiDeleteBtn.isEnabled = enabled;
-    uiDeleteBtn.alpha = enabled ? 1.0 : 0.5;
+function buildMeshForObject(obj) {
+  let mesh;
+  const kind = obj.kind;
+  const sx = obj.scale?.x || 1;
+  const sy = obj.scale?.y || 1;
+  const sz = obj.scale?.z || 1;
+  if (kind === "sphere") {
+    mesh = BABYLON.MeshBuilder.CreateSphere(`obj_${obj.id}`, { diameter: Math.max(sx, sy, sz) }, scene);
+  } else if (kind === "cylinder") {
+    mesh = BABYLON.MeshBuilder.CreateCylinder(`obj_${obj.id}`, { diameter: Math.max(sx, sz), height: sy }, scene);
+  } else if (kind === "plane" || kind === "billboard") {
+    mesh = BABYLON.MeshBuilder.CreatePlane(`obj_${obj.id}`, { width: sx, height: sy }, scene);
+  } else if (kind === "triggerZone") {
+    mesh = BABYLON.MeshBuilder.CreateTorus(`obj_${obj.id}`, { diameter: Math.max(sx, sz), thickness: Math.max(0.05, Math.min(sx, sz) * 0.05) }, scene);
+    mesh.rotation.x = Math.PI / 2;
+  } else {
+    mesh = BABYLON.MeshBuilder.CreateBox(`obj_${obj.id}`, { width: sx, height: sy, depth: sz }, scene);
   }
+
+  const mat = new BABYLON.StandardMaterial(`mat_${obj.id}`, scene);
+  mat.diffuseColor = BABYLON.Color3.FromHexString(obj.visual?.color || "#00A3FF");
+  mat.emissiveColor = kind === "triggerZone" ? BABYLON.Color3.FromHexString(obj.visual?.color || "#00A3FF").scale(0.4) : BABYLON.Color3.Black();
+  mat.specularColor = BABYLON.Color3.Black();
+  mat.alpha = typeof obj.visual?.opacity === "number" ? obj.visual.opacity : 1;
+  mat.wireframe = !!obj.visual?.wireframe;
+  mesh.material = mat;
+  mesh.parent = worldRoot;
+  mesh.isPickable = true;
+  if (obj.kind === "billboard" || obj.visual?.billboard) mesh.billboardMode = BABYLON.Mesh.BILLBOARDMODE_Y;
+  mesh.metadata = { kind: "worldObject", objectId: obj.id };
+
+  if (obj.visual?.label) {
+    const plane = BABYLON.MeshBuilder.CreatePlane(`label_${obj.id}`, { width: 4, height: 1 }, scene);
+    plane.parent = mesh;
+    plane.position.y = 1.5;
+    plane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+    const tex = BABYLON.GUI.AdvancedDynamicTexture.CreateForMesh(plane, 512, 128, false);
+    const tb = new BABYLON.GUI.TextBlock(`tb_${obj.id}`, obj.visual.label);
+    tb.color = "#e6edf3";
+    tb.fontSize = 56;
+    tex.addControl(tb);
+  }
+
+  return mesh;
 }
 
-// --- Selection / interaction ---
-const SELECT_DELETE_RANGE_M = 8; // meters; must be within this to delete a dropped cube
-
-let selectedMesh = null;
-let selectedLabel = "none";
-let selectedX = null;
-let selectedZ = null;
-let selectedKind = null;
-let selectedId = null;
-let selectedAnchor = null;
-
-// Simple visual highlight
-let highlight = null;
-try {
-  highlight = new BABYLON.HighlightLayer("hl", scene);
-} catch (_) {
-  highlight = null;
+function ensureObjectMesh(obj) {
+  if (!objectMeshes[obj.id]) objectMeshes[obj.id] = buildMeshForObject(obj);
+  return objectMeshes[obj.id];
 }
 
 function clearSelection() {
@@ -418,466 +486,118 @@ function clearSelection() {
     try { highlight.removeMesh(selectedMesh); } catch (_) {}
   }
   selectedMesh = null;
+  selectedObjectId = null;
   selectedLabel = "none";
-  selectedX = null;
-  selectedZ = null;
   selectedKind = null;
-  selectedId = null;
-  selectedAnchor = null;
-  setUISelected("Selected: none", false);
+  selectedRel = null;
+  setSelected("Selected: none", false);
 }
 
 function setSelection(mesh) {
   if (!mesh) return clearSelection();
-
-  // Only select meshes that opt in via metadata
   const md = mesh.metadata || {};
   if (!md.kind) return clearSelection();
-
   if (highlight) {
     if (selectedMesh) {
       try { highlight.removeMesh(selectedMesh); } catch (_) {}
     }
     try { highlight.addMesh(mesh, BABYLON.Color3.FromHexString("#FFCC00")); } catch (_) {}
   }
-
   selectedMesh = mesh;
   selectedKind = md.kind;
-  selectedId = md.blockId ?? md.socketId ?? null;
-
-  selectedX = (typeof md.relX === "number") ? md.relX : null;
-  selectedZ = (typeof md.relZ === "number") ? md.relZ : null;
-  selectedAnchor = md.anchor ? { lat: md.anchor.lat, lon: md.anchor.lon } : null;
-
-  if (selectedKind === "droppedCube") selectedLabel = `Cube #${selectedId}`;
-  else if (selectedKind === "playerCube" || selectedKind === "playerSphere") selectedLabel = `Player ${shortId(String(selectedId || ""))}`;
-  else selectedLabel = String(md.kind);
-
+  selectedObjectId = md.objectId ?? null;
+  selectedLabel = md.kind === "worldObject" ? `Object #${selectedObjectId}` : String(md.kind);
+  selectedRel = md.rel ? { ...md.rel } : null;
   updateSelectionHUD();
-}
-
-function currentLatLon() {
-  if (isNumber(filtLat) && isNumber(filtLon)) return { lat: filtLat, lon: filtLon };
-  if (isNumber(rawLat) && isNumber(rawLon)) return { lat: rawLat, lon: rawLon };
-  return null;
+  maybeEmitTapTrigger(selectedObjectId);
 }
 
 function updateSelectionHUD() {
-  if (!selectedMesh) {
-    setUISelected("Selected: none", false);
+  if (!selectedMesh || !selectedRel) {
+    setSelected("Selected: none", false);
     return;
   }
-
-  let distTxt = "distance: ?";
+  const me = currentRel();
   let canDelete = false;
-
-    const meRel = getCurrentRelativePosition();
-  if (meRel && isNumber(selectedX) && isNumber(selectedZ) && selectedAnchor && sameAnchor(sharedAnchor, selectedAnchor)) {
-    const d = relativeDistMeters(meRel, { x: selectedX, z: selectedZ });
+  let distTxt = "distance: ?";
+  if (me) {
+    const d = relDist(me, selectedRel);
     distTxt = `distance: ${d.toFixed(1)}m`;
-
-    if (selectedKind === "droppedCube" && d <= SELECT_DELETE_RANGE_M) {
-      canDelete = true;
-    }
+    const obj = (lastWorldState?.worldObjects || []).find(o => Number(o.id) === Number(selectedObjectId));
+    if (obj?.subtype === "droppedCube" && d <= SELECT_DELETE_RANGE_M) canDelete = true;
   }
-
-  if (selectedAnchor && !sameAnchor(sharedAnchor, selectedAnchor)) {
-    distTxt = 'distance: anchor mismatch';
-    canDelete = false;
-  }
-
-  setUISelected(`Selected: ${selectedLabel} | ${distTxt}`, canDelete);
+  setSelected(`Selected: ${selectedLabel} | ${distTxt}`, canDelete);
 }
 
 function attemptDeleteSelected() {
-  if (!selectedMesh) return;
-
-  if (selectedKind !== "droppedCube" || selectedId == null) return;
-
-    const meRel = getCurrentRelativePosition();
-  if (!meRel || !isNumber(selectedX) || !isNumber(selectedZ) || !selectedAnchor || !sameAnchor(sharedAnchor, selectedAnchor)) return;
-
-  const d = relativeDistMeters(meRel, { x: selectedX, z: selectedZ });
+  if (!selectedObjectId || !selectedRel) return;
+  const obj = (lastWorldState?.worldObjects || []).find(o => Number(o.id) === Number(selectedObjectId));
+  if (!obj || obj.subtype !== "droppedCube") return;
+  const me = currentRel();
+  if (!me) return;
+  const d = relDist(me, selectedRel);
   if (d > SELECT_DELETE_RANGE_M) return;
-
-  socket.emit("deleteCube", { blockId: selectedId });
-  emitTelemetry("ui", { action: "deleteCube", blockId: selectedId, distM: d });
-
-  // Optimistically clear selection; reconcile will dispose the cube after server confirms
+  socket.emit("deleteCube", { objectId: selectedObjectId });
   clearSelection();
 }
 
-// Pointer selection (tap / click on canvas)
+function maybeEmitTapTrigger(objectId) {
+  const obj = (lastWorldState?.worldObjects || []).find(o => Number(o.id) === Number(objectId));
+  if (!obj?.trigger?.enabled || obj.trigger.type !== "tap") return;
+  const me = currentRel();
+  socket.emit("objectTriggerEvent", {
+    objectId: obj.id,
+    triggerId: obj.trigger.triggerId,
+    triggerType: "tap",
+    relX: me?.x ?? 0,
+    relZ: me?.z ?? 0,
+    distM: me ? relDist(me, obj.position || { x: 0, z: 0 }) : null
+  });
+}
+
 scene.onPointerObservable.add((pi) => {
   if (pi.type !== BABYLON.PointerEventTypes.POINTERDOWN) return;
-
-
-  // Ignore clicks on HUD/buttons
-  // Ignore taps on the in-canvas drawer UI regions
   if (isPointerOverDrawerUI(pi.event)) return;
-
-  const target = pi.event && pi.event.target;
-  if (target && target.id && (target.id.startsWith("btn") || target.id === "hud" || target.id === "buttons" || target.id === "status" || target.id === "selection")) {
-    return;
-  }
-
   const pick = scene.pick(scene.pointerX, scene.pointerY);
-  if (pick && pick.hit && pick.pickedMesh) {
-    setSelection(pick.pickedMesh);
-  } else {
-    clearSelection();
-  }
+  if (pick && pick.hit && pick.pickedMesh) setSelection(pick.pickedMesh);
+  else clearSelection();
 });
 
-// Delete via button / keyboard
-if (btnDelete) {
-  btnDelete.addEventListener("click", attemptDeleteSelected);
-}
-
-window.addEventListener("keydown", (e) => {
-  if (e.key === "Delete" || e.key === "Backspace") {
-    attemptDeleteSelected();
-  }
-});
-
-
-// Expose minimal debug handles (optional)
-window.__scene = scene;
-
-// --- Socket ---
-const socket = io({
-  path: "/socket.io",
-  transports: ["websocket", "polling"],
-  reconnection: true,
-  reconnectionAttempts: 10,
-  reconnectionDelay: 800
-});
-
-// --- Constants ---
-const PLAYER_CUBE_Y  = -5;   // below camera
-const DROPPED_CUBE_Y = -1;   // "ground-ish"
-const PLAYER_POINTER_Y_OFFSET = 1.6; // raise player pointer above dropped cubes
-const REMOTE_SPHERE_Y_OFFSET = 10;
-
-const GPS_ALPHA = 0.12;      // smoothing strength (0..1). Higher = more responsive, more jitter.
-const DEAD_BAND_M = 1.8;     // ignore smaller movements (meters)
-const SEND_MIN_MS = 350;     // throttle outgoing gps updates
-
-const YAW_ALPHA = 0.08;      // heading smoothing if Lock North is enabled
-
-// Telemetry throttling
-const TELEMETRY_MIN_MS = 500;
-
-// --- State ---
-sharedAnchor = loadAnchor(); // {lat, lon}; default 0,0 and editable in Field Kit
-
-let rawLat = null, rawLon = null;
-let filtLat = null, filtLon = null;
-let lastSentLat = null, lastSentLon = null;
-let lastSentAt = 0;
-let lastSentRelX = null, lastSentRelZ = null;
-
-// Lock North
-let lockNorth = false;
-let yawZero = 0;
-let yawSmoothed = 0;
-
-let lastYawSent = null;
-let lastYawSentAt = 0;
-const YAW_SEND_MIN_MS = 120;
-const YAW_SEND_MIN_DELTA = 0.03; // ~1.7 degrees
-
-// Telemetry timing
-let lastTelemAt = 0;
-
-// Entities
-const playerPointers = {}; // socketId -> pointer mesh (pyramid)
-const droppedCubes = {};  // blockId -> cube mesh
-
-// --- Helpers ---
-function shortId(id){ return (id||'').slice(-4); }
-
-function isNumber(n) {
-  return typeof n === "number" && Number.isFinite(n);
-}
-
-function normalizeCoord(n, fallback = 0) {
-  const x = Number(n);
-  return Number.isFinite(x) ? x : fallback;
-}
-
-function sameAnchor(a, b) {
-  return !!a && !!b && Number(a.lat) === Number(b.lat) && Number(a.lon) === Number(b.lon);
-}
-
-function loadAnchor() {
-  try {
-    const raw = localStorage.getItem('fieldKitAnchor');
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return { lat: normalizeCoord(parsed.lat, 0), lon: normalizeCoord(parsed.lon, 0) };
-    }
-  } catch (_) {}
-  return { lat: 0, lon: 0 };
-}
-
-function saveAnchor(anchor) {
-  try {
-    localStorage.setItem('fieldKitAnchor', JSON.stringify({ lat: anchor.lat, lon: anchor.lon }));
-  } catch (_) {}
-}
-
-function setSharedAnchor(lat, lon, { resetSendBaseline = true } = {}) {
-  sharedAnchor = { lat: normalizeCoord(lat, 0), lon: normalizeCoord(lon, 0) };
-  saveAnchor(sharedAnchor);
-  updateAnchorUI();
-  updateSelectionHUD();
-
-  if (resetSendBaseline) {
-    lastSentLat = null;
-    lastSentLon = null;
-    lastSentRelX = null;
-    lastSentRelZ = null;
-    lastSentAt = 0;
-  }
-
-  emitTelemetry('anchor', { anchor: sharedAnchor });
-}
-
-function metersPerDegLonAt(lat) {
-  return 111320 * Math.cos(lat * Math.PI / 180);
-}
-
-function latLonToRelativeXZ(lat, lon, anchor = sharedAnchor) {
-  const dLat = (lat - anchor.lat);
-  const dLon = (lon - anchor.lon);
-  const x = dLon * metersPerDegLonAt(anchor.lat);
-  const z = dLat * 111320;
-  return { x, z };
-}
-
-function relativeDistMeters(a, b) {
-  if (!a || !b) return Infinity;
-  if (!isNumber(a.x) || !isNumber(a.z) || !isNumber(b.x) || !isNumber(b.z)) return Infinity;
-  return Math.hypot(a.x - b.x, a.z - b.z);
-}
-
-function distMeters(lat1, lon1, lat2, lon2, anchor = sharedAnchor) {
-  const a = latLonToRelativeXZ(lat1, lon1, anchor);
-  const b = latLonToRelativeXZ(lat2, lon2, anchor);
-  return relativeDistMeters(a, b);
-}
-
-function getCurrentRelativePosition() {
-  const fix = currentLatLon();
-  if (!fix) return null;
-  return latLonToRelativeXZ(fix.lat, fix.lon, sharedAnchor);
-}
-
-
-function ensurePlayerPointer(id, color) {
-  if (playerPointers[id]) return playerPointers[id];
-
-  // A pyramid-like marker (4-sided cone) that indicates facing direction.
-  const p = BABYLON.MeshBuilder.CreateCylinder(
-    `playerPointer_${id}`,
-    { diameterTop: 0, diameterBottom: 0.9, height: 1.6, tessellation: 4 },
-    scene
-  );
-
-  const mat = new BABYLON.StandardMaterial(`playerPointerMat_${id}`, scene);
-  mat.diffuseColor = BABYLON.Color3.FromHexString(color || "#FFCC00");
-  mat.emissiveColor = BABYLON.Color3.FromHexString("#1f2937");
-  mat.specularColor = BABYLON.Color3.Black();
-  p.material = mat;
-
-  p.parent = worldRoot;
-  p.isPickable = true;
-
-  // Point forward along +Z (cone axis is Y)
-  p.rotation.x = Math.PI / 2;
-
-  playerPointers[id] = p;
-  return p;
-}
-
-function ensureDroppedCube(blockId, color) {
-  if (!droppedCubes[blockId]) {
-    const cube = initBox(scene, color);
-    cube.name = `droppedCube_${blockId}`;
-    cube.parent = worldRoot;
-      cube.isPickable = true;
-  cube.metadata = { kind: "droppedCube", blockId: blockId };
-droppedCubes[blockId] = cube;
-  }
-  return droppedCubes[blockId];
-}
-
-// Extract yaw from camera quaternion (radians)
-function getCameraYawRad() {
-  const q = camera.rotationQuaternion;
-  if (!q) return camera.rotation?.y || 0;
-
-  const ysqr = q.y * q.y;
-  const t3 = 2.0 * (q.w * q.y + q.x * q.z);
-  const t4 = 1.0 - 2.0 * (ysqr + q.z * q.z);
-  return Math.atan2(t3, t4);
-}
-
-function normalizeAngleRad(a) {
-  while (a > Math.PI) a -= 2 * Math.PI;
-  while (a < -Math.PI) a += 2 * Math.PI;
-  return a;
-}
-
-function maybeSendOrientationUpdate() {
-  if (!socket || !socket.connected) return;
-  const now = Date.now();
-  if (now - lastYawSentAt < YAW_SEND_MIN_MS) return;
-
-  const yaw = getCameraYawRad();
-  if (lastYawSent !== null) {
-    const d = normalizeAngleRad(yaw - lastYawSent);
-    if (Math.abs(d) < YAW_SEND_MIN_DELTA) return;
-  }
-
-  lastYawSent = yaw;
-  lastYawSentAt = now;
-  socket.emit("orientationUpdate", { yaw });
-}
-
-function applyHeadingStabilization() {
-  if (!lockNorth) {
-    worldRoot.rotation.y = 0;
-    return;
-  }
-
-  const yaw = getCameraYawRad();
-  const delta = normalizeAngleRad(yaw - yawSmoothed);
-  yawSmoothed = normalizeAngleRad(yawSmoothed + delta * YAW_ALPHA);
-
-  worldRoot.rotation.y = -(yawSmoothed - yawZero);
-}
-
-// --- Telemetry emit (best effort) ---
-function emitTelemetry(kind, extra = {}) {
-  const now = Date.now();
-  if (kind === "gps" && now - lastTelemAt < TELEMETRY_MIN_MS) return;
-  if (kind === "state" && now - lastTelemAt < TELEMETRY_MIN_MS) return;
-
-  lastTelemAt = now;
-
-  let proj = null;
-  try {
-    if (isNumber(filtLat) && isNumber(filtLon)) proj = latLonToRelativeXZ(filtLat, filtLon, sharedAnchor);
-  } catch (_) {}
-
-  const payload = {
-    kind,
-    lockNorth,
-    sharedAnchor,
-    raw: isNumber(rawLat) && isNumber(rawLon) ? { lat: rawLat, lon: rawLon } : null,
-    filt: isNumber(filtLat) && isNumber(filtLon) ? { lat: filtLat, lon: filtLon } : null,
-    proj: proj ? { x: proj.x, z: proj.z } : null,
-    yaw: getCameraYawRad(),
-    extra
-  };
-
-  socket.emit("telemetry", payload);
-}
-
-// --- UI wiring ---
-ensureFollowButton();
-ensureSelectionUI();
-if (btnDelete && !btnDelete.__wired) { btnDelete.__wired = true; btnDelete.addEventListener("click", attemptDeleteSelected); }
-if (btnPerm) {
-  btnPerm.addEventListener("click", async () => {
-    const ok = await requestDevicePermissions();
-    btnPerm.textContent = ok ? "Motion Enabled" : "Motion Blocked";
-    emitTelemetry("ui", { action: "perm", ok });
-  });
-}
-
-if (btnNorth) {
-  btnNorth.addEventListener("click", () => {
-    lockNorth = !lockNorth;
-    yawSmoothed = getCameraYawRad();
-    yawZero = yawSmoothed;
-
-    btnNorth.textContent = lockNorth ? "Lock North: On" : "Lock North: Off";
-    emitTelemetry("ui", { action: "lockNorth", lockNorth });
-  });
-}
-
-if (btnColor) {
-  btnColor.addEventListener("click", () => {
-    socket.emit("toggleColor");
-    emitTelemetry("ui", { action: "toggleColor" });
-  });
-}
-
-if (btnDrop) {
-  btnDrop.addEventListener("click", () => {
-    const rel = getCurrentRelativePosition();
-    if (!rel) return;
-
-    socket.emit("dropCube", { anchorLat: sharedAnchor.lat, anchorLon: sharedAnchor.lon, relX: rel.x, relZ: rel.z });
-    emitTelemetry("drop", { anchor: sharedAnchor, rel });
-  });
-}
-
-// --- GPS ---
 function onGeo(lat, lon, coords) {
-  rawLat = lat;
-  rawLon = lon;
-
+  rawLat = lat; rawLon = lon;
   if (filtLat === null || filtLon === null) {
-    filtLat = lat;
-    filtLon = lon;
+    filtLat = lat; filtLon = lon;
   } else {
     filtLat = filtLat + (lat - filtLat) * GPS_ALPHA;
     filtLon = filtLon + (lon - filtLon) * GPS_ALPHA;
   }
-
-  // Emit telemetry with sensor metadata (accuracy/speed/heading)
-  if (coords) {
-    emitTelemetry("gps", {
-      accuracy: coords.accuracy,
-      altitude: coords.altitude,
-      altitudeAccuracy: coords.altitudeAccuracy,
-      heading: coords.heading,
-      speed: coords.speed
-    });
-  } else {
-    emitTelemetry("gps");
-  }
-
-  const rel = latLonToRelativeXZ(filtLat, filtLon, sharedAnchor);
-  const now = Date.now();
-  if (lastSentLat === null || lastSentLon === null || lastSentRelX === null || lastSentRelZ === null) {
-    lastSentLat = filtLat;
-    lastSentLon = filtLon;
-    lastSentRelX = rel.x;
-    lastSentRelZ = rel.z;
-    lastSentAt = now;
-    socket.emit("gpsUpdate", { anchorLat: sharedAnchor.lat, anchorLon: sharedAnchor.lon, relX: rel.x, relZ: rel.z });
-    return;
-  }
-
-  if (now - lastSentAt < SEND_MIN_MS) return;
-
-  const moved = relativeDistMeters({ x: lastSentRelX, z: lastSentRelZ }, rel);
-  if (moved < DEAD_BAND_M) return;
-
-  lastSentLat = filtLat;
-  lastSentLon = filtLon;
-  lastSentRelX = rel.x;
-  lastSentRelZ = rel.z;
-  lastSentAt = now;
-  socket.emit("gpsUpdate", { anchorLat: sharedAnchor.lat, anchorLon: sharedAnchor.lon, relX: rel.x, relZ: rel.z });
+  emitTelemetry("gps", {
+    accuracy: coords?.accuracy,
+    heading: coords?.heading,
+    speed: coords?.speed
+  });
+  maybeSendGpsUpdate();
 }
 
-// Start watchPosition
+function sendGpsNow() {
+  const rel = currentRel();
+  if (!rel || !socket.connected) return;
+  socket.emit("gpsUpdate", { anchorLat, anchorLon, relX: rel.x, relY: 0, relZ: rel.z });
+}
+
+function maybeSendGpsUpdate() {
+  const rel = currentRel();
+  if (!rel) return;
+  const now = Date.now();
+  if (lastSentRelX === null || lastSentRelZ === null) {
+    lastSentRelX = rel.x; lastSentRelZ = rel.z; lastSentAt = now; sendGpsNow(); return;
+  }
+  if (now - lastSentAt < SEND_MIN_MS) return;
+  const moved = Math.hypot(rel.x - lastSentRelX, rel.z - lastSentRelZ);
+  if (moved < DEAD_BAND_M) return;
+  lastSentRelX = rel.x; lastSentRelZ = rel.z; lastSentAt = now; sendGpsNow();
+}
+
 if ("geolocation" in navigator) {
   navigator.geolocation.watchPosition(
     (pos) => {
@@ -886,141 +606,131 @@ if ("geolocation" in navigator) {
       if (isNumber(lat) && isNumber(lon)) onGeo(lat, lon, pos.coords);
     },
     () => {},
-    {
-      enableHighAccuracy: true,
-      maximumAge: 1000,
-      timeout: 20000
-    }
+    { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 }
   );
 }
 
-// --- World reconciliation (authoritative snapshots) ---
-let lastWorldState = null;
-let myDeletedCount = 0;
 function reconcileWorld(state) {
-  lastWorldState = state;
+  lastWorldState = state || { clients: {}, worldObjects: [] };
+  const clients = state.clients || {};
+  const worldObjects = Array.isArray(state.worldObjects) ? state.worldObjects : [];
 
-  const clientIds = Object.keys(state.clients || {});
-  const blockCount = (state.droppedBlocks || []).length;
+  setStatus(`Connected (${shortId(socket.id)}) | Anchor ${anchorKey}`);
+  setCounts(Object.keys(clients).filter(id => (clients[id]?.role || "player") === "player").length, worldObjects.length, myDeletedCount);
 
-  setUIStatus(`Connected (${shortId(socket.id)})`);
-  setUICounts(clientIds.length, blockCount, myDeletedCount);
-
-  // Players (pointers only; no cubes/spheres)
-  for (const [id, c] of Object.entries(state.clients || {})) {
+  for (const [id, c] of Object.entries(clients)) {
+    if (c.role === "daemon") continue;
     const ptr = ensurePlayerPointer(id, c.color);
-
-    if (isNumber(c.relX) && isNumber(c.relZ) && sameAnchor(sharedAnchor, { lat: c.anchorLat, lon: c.anchorLon })) {
-      ptr.position.set(c.relX, DROPPED_CUBE_Y + PLAYER_POINTER_Y_OFFSET, c.relZ);
-      ptr.setEnabled(true);
-      ptr.metadata = { ...(ptr.metadata || {}), relX: c.relX, relZ: c.relZ, anchor: { lat: c.anchorLat, lon: c.anchorLon }, kind: "playerPointer", socketId: id };
-    } else {
+    if (c.anchorKey !== anchorKey || !isNumber(c.relX) || !isNumber(c.relZ)) {
       ptr.setEnabled(false);
+      continue;
     }
-
-    // Rotate to match that player's heading (yaw) in world coordinates.
-    // Since ptr is parented to worldRoot, convert world yaw into local yaw by subtracting worldRoot rotation.
-    if (isNumber(c.yaw)) {
-      ptr.rotation.y = c.yaw - worldRoot.rotation.y;
-    }
+    ptr.setEnabled(true);
+    ptr.position.set(c.relX, PLAYER_POINTER_Y, c.relZ);
+    ptr.metadata = { kind: "playerPointer", socketId: id, rel: { x: c.relX, z: c.relZ } };
+    if (isNumber(c.yaw)) ptr.rotation.y = c.yaw - worldRoot.rotation.y;
   }
 
-  // Remove disconnected players
-
   for (const id of Object.keys(playerPointers)) {
-    if (!state.clients || !state.clients[id]) {
-      playerPointers[id].dispose();
+    if (!clients[id] || clients[id].role === "daemon") {
+      try { playerPointers[id].dispose(); } catch (_) {}
       delete playerPointers[id];
     }
   }
 
-  // Follow mode: translate the world so the local player's cube stays centered under the camera.
-  if (followMe && socket.id && playerPointers[socket.id]) {
-    const me = playerPointers[socket.id];
-    worldRoot.position.x = -me.position.x;
-    worldRoot.position.z = -me.position.z;
+  const present = new Set();
+  for (const obj of worldObjects) {
+    present.add(String(obj.id));
+    if (obj.anchorKey !== anchorKey || obj.state?.active === false) {
+      disposeObjectMesh(obj.id);
+      continue;
+    }
+    const mesh = ensureObjectMesh(obj);
+    mesh.setEnabled(true);
+    mesh.position.set(obj.position?.x || 0, (obj.position?.y || 0) + (obj.subtype === "droppedCube" ? DROPPED_CUBE_Y : 0), obj.position?.z || 0);
+    mesh.rotation.set(obj.rotation?.x || 0, obj.rotation?.y || 0, obj.rotation?.z || 0);
+    mesh.scaling.set(obj.scale?.x || 1, obj.scale?.y || 1, obj.scale?.z || 1);
+    mesh.metadata = { kind: "worldObject", objectId: obj.id, rel: { x: obj.position?.x || 0, z: obj.position?.z || 0 } };
   }
 
-  // Dropped cubes (create/update)
-  const presentBlocks = new Set();
-  for (const b of (state.droppedBlocks || [])) {
-    if (!isNumber(b.id) || !isNumber(b.relX) || !isNumber(b.relZ)) continue;
-    if (!sameAnchor(sharedAnchor, { lat: b.anchorLat, lon: b.anchorLon })) continue;
-    presentBlocks.add(String(b.id));
-
-    const cube = ensureDroppedCube(b.id, b.color);
-    cube.position.set(b.relX, DROPPED_CUBE_Y, b.relZ);
-    cube.metadata = { ...(cube.metadata || {}), relX: b.relX, relZ: b.relZ, anchor: { lat: b.anchorLat, lon: b.anchorLon }, kind: "droppedCube", blockId: b.id };
+  for (const id of Object.keys(objectMeshes)) {
+    if (!present.has(String(id))) disposeObjectMesh(id);
   }
 
-  // Remove deleted dropped cubes (works even when droppedBlocks is empty)
-  for (const id of Object.keys(droppedCubes)) {
-    if (!presentBlocks.has(String(id))) {
-      if (selectedKind === "droppedCube" && String(selectedId) === String(id)) {
-        clearSelection();
-      }
-      droppedCubes[id].dispose();
-      delete droppedCubes[id];
+  if (followMe) {
+    const me = clients[socket.id];
+    if (me && me.anchorKey === anchorKey && isNumber(me.relX) && isNumber(me.relZ)) {
+      worldRoot.position.x = -me.relX;
+      worldRoot.position.z = -me.relZ;
     }
   }
 
-  // If the selected mesh was disposed for any reason, clear it
-  if (selectedMesh && selectedMesh.isDisposed && selectedMesh.isDisposed()) {
-    clearSelection();
-  }
-
-  // Update selection HUD (distance may change as GPS updates)
   updateSelectionHUD();
+  processProximityTriggers();
 }
 
+function processProximityTriggers() {
+  const me = currentRel();
+  if (!me || !lastWorldState) return;
+  const now = Date.now();
+  for (const obj of (lastWorldState.worldObjects || [])) {
+    if (obj.anchorKey !== anchorKey) continue;
+    if (!obj.trigger?.enabled || obj.trigger.type !== "proximity") continue;
+    const d = relDist(me, obj.position || { x: 0, z: 0 });
+    const key = `${obj.id}:${obj.trigger.triggerId}`;
+    const entry = triggerMemory.get(key) || { fired: false, lastAt: 0 };
+    const inside = d <= Number(obj.trigger.radius || 0);
+    if (inside) {
+      const cooldownMs = Number(obj.trigger.cooldownMs || 0);
+      const ready = !entry.fired || (cooldownMs > 0 && now - entry.lastAt >= cooldownMs);
+      if (ready) {
+        socket.emit("objectTriggerEvent", {
+          objectId: obj.id,
+          triggerId: obj.trigger.triggerId,
+          triggerType: "proximity",
+          relX: me.x,
+          relZ: me.z,
+          distM: d
+        });
+        entry.fired = true;
+        entry.lastAt = now;
+        triggerMemory.set(key, entry);
+      }
+    } else if (!obj.trigger.oncePerClient) {
+      entry.fired = false;
+      triggerMemory.set(key, entry);
+    }
+  }
+}
 
 socket.on("myCounters", (c) => {
-  if (!c || typeof c !== "object") return;
-  if (typeof c.deletedCubes === "number" && Number.isFinite(c.deletedCubes)) {
+  if (c && Number.isFinite(c.deletedCubes)) {
     myDeletedCount = c.deletedCubes;
-    // Update counts immediately if we have last state
-    const users = Object.keys(lastWorldState?.clients || {}).length;
-    const cubes = (lastWorldState?.droppedBlocks || []).length;
-    setUICounts(users, cubes, myDeletedCount);
+    setCounts(Object.keys(lastWorldState?.clients || {}).length, (lastWorldState?.worldObjects || []).length, myDeletedCount);
   }
 });
 
 socket.on("deleteResult", (r) => {
-  // Quick feedback so you can tell if the server accepted the delete
   if (!r || typeof r !== "object") return;
-  if (r.ok) {
-    setUIStatus(`Connected (${shortId(socket.id)}) | Deleted cube #${r.blockId}`);
-    if (r.actionCounters && lastWorldState) {
-      setUICounts(Object.keys(lastWorldState.clients || {}).length, (lastWorldState.droppedBlocks || []).length, r.actionCounters.deletedCubes || 0);
-    }
-  } else {
-    const reason = r.reason || "rejected";
-    setUIStatus(`Connected (${shortId(socket.id)}) | Delete failed: ${reason}`);
-    if (r.actionCounters && lastWorldState) {
-      setUICounts(Object.keys(lastWorldState.clients || {}).length, (lastWorldState.droppedBlocks || []).length, r.actionCounters.deletedCubes || 0);
-    }
-  }
+  setStatus(r.ok ? `Connected (${shortId(socket.id)}) | Deleted object #${r.objectId}` : `Connected (${shortId(socket.id)}) | Delete failed: ${r.reason || 'rejected'}`);
 });
 
 socket.on("connect", () => {
-  setUIStatus("Connected");
+  setStatus("Connected");
   emitTelemetry("connect", { id: socket.id });
+  sendGpsNow();
 });
 
 socket.on("worldState", (state) => {
   reconcileWorld(state);
-  emitTelemetry("state", {
-    users: Object.keys(state.clients || {}).length,
-    cubes: (state.droppedBlocks || []).length
-  });
+  emitTelemetry("state", { users: Object.keys(state.clients || {}).length, objects: (state.worldObjects || []).length });
 });
 
-// --- Render loop ---
 engine.runRenderLoop(() => {
   applyHeadingStabilization();
   maybeSendOrientationUpdate();
   updateSelectionHUD();
   scene.render();
 });
-
 window.addEventListener("resize", () => engine.resize());
+window.__scene = scene;
