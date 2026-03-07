@@ -371,6 +371,23 @@ function createDrawerUI() {
     emitTelemetry("ui", { action: "setAnchor", anchorLat, anchorLon });
   });
 
+  mkButton(root, "uiPasteAnchor", "Paste Anchor", async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      const parsed = parseAnchorText(text);
+      if (!parsed) {
+        setStatus("Clipboard needs: lat,lon");
+        emitTelemetry("ui", { action: "pasteAnchorInvalid", value: String(text || "").slice(0, 120) });
+        return;
+      }
+      applyAnchor(parsed.lat, parsed.lon);
+      emitTelemetry("ui", { action: "pasteAnchor", anchorLat, anchorLon });
+    } catch (_) {
+      setStatus("Clipboard paste blocked");
+      emitTelemetry("ui", { action: "pasteAnchorBlocked" });
+    }
+  });
+
   mkButton(root, "uiUseGpsAnchor", "Use My GPS as Anchor", () => {
     if (isNumber(rawLat) && isNumber(rawLon)) {
       applyAnchor(rawLat, rawLon);
@@ -700,10 +717,16 @@ function reconcileWorld(state) {
   }
 
   if (followMe) {
-    const me = clients[socket.id];
-    if (me && me.anchorKey === anchorKey && isNumber(me.relX) && isNumber(me.relZ)) {
-      worldRoot.position.x = -me.relX;
-      worldRoot.position.z = -me.relZ;
+    const meLocal = currentRel();
+    if (meLocal && isNumber(meLocal.x) && isNumber(meLocal.z)) {
+      worldRoot.position.x = -meLocal.x;
+      worldRoot.position.z = -meLocal.z;
+    } else {
+      const me = clients[socket.id];
+      if (me && me.anchorKey === anchorKey && isNumber(me.relX) && isNumber(me.relZ)) {
+        worldRoot.position.x = -me.relX;
+        worldRoot.position.z = -me.relZ;
+      }
     }
   }
 
