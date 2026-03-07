@@ -24,12 +24,20 @@ const socketToObjectIds = {}; // socketId -> Set(objectId)
 const TELEMETRY_MAX = 5000;
 const telemetry = [];
 
-const AUTH_FILE = path.join(__dirname, "circle-auth.txt");
-let circleAuthCue = "circle-auth-demo-change-me";
-try {
-  const fileCue = fs.readFileSync(AUTH_FILE, "utf8").trim();
-  if (fileCue) circleAuthCue = fileCue;
-} catch (_) {}
+const CIRCLE_AUTH_FILE = path.join(__dirname, "circle-auth.txt");
+const CLEANUP_AUTH_FILE = path.join(__dirname, "cleanup-auth.txt");
+
+function readAuthCue(filePath, fallback) {
+  try {
+    const value = fs.readFileSync(filePath, "utf8").trim();
+    return value || fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+let circleAuthCue = readAuthCue(CIRCLE_AUTH_FILE, "circle-auth-demo-change-me");
+let cleanupAuthCue = readAuthCue(CLEANUP_AUTH_FILE, "cleanup-auth-demo-change-me");
 
 function pushTelemetry(entry) {
   telemetry.push(entry);
@@ -236,7 +244,8 @@ app.get("/debug/state", (_req, res) => {
     clients: buildWorldState().clients,
     worldObjects: Object.values(worldObjects),
     circleAuthLoaded: !!circleAuthCue,
-    authFile: AUTH_FILE
+    cleanupAuthLoaded: !!cleanupAuthCue,
+    authFiles: { circle: CIRCLE_AUTH_FILE, cleanup: CLEANUP_AUTH_FILE }
   });
 });
 
@@ -280,11 +289,17 @@ io.on("connection", (socket) => {
     if (!me) return;
     me.role = "daemon";
     me.daemonType = String(daemonType || "unknown");
-    me.authed = String(authCue || "").trim() === circleAuthCue;
+    const cue = String(authCue || "").trim();
+    const expectedCue = me.daemonType === "cleanup" ? cleanupAuthCue : circleAuthCue;
+    me.authed = cue && cue === expectedCue;
     socket.emit("daemonAuthResult", {
       ok: me.authed,
       daemonType: me.daemonType,
-      capabilities: me.authed ? ["readWorld", "createObject", "destroyObject", "receiveTriggers"] : []
+      capabilities: me.authed
+        ? (me.daemonType === "cleanup"
+            ? ["readWorld", "destroyObject", "wipeWorld"]
+            : ["readWorld", "createObject", "destroyObject", "receiveTriggers"])
+        : []
     });
     pushTelemetry({ t: Date.now(), id: socket.id, kind: "daemonHello", daemonType: me.daemonType, ok: me.authed });
     emitWorldState();
@@ -420,15 +435,22 @@ io.on("connection", (socket) => {
     let destroyedCount = 0;
 
     if (ownedOnly) {
-      for (const id of Array.from(socketToObjectIds[socket.id] || [])) {
-        if (destroyObject(id, "daemon_owned_clear")) destroyedCount += 1;
+      if (clients[socket.id]?.daemonType === "cleanup") {
+        for (const id of Object.keys(worldObjects).map(Number)) {
+          if (destroyObject(id, "cleanup_wipe")) destroyedCount += 1;
+        }
+      } else {
+        for (const id of Array.from(socketToObjectIds[socket.id] || [])) {
+          if (destroyObject(id, "daemon_owned_clear")) destroyedCount += 1;
+        }
       }
     } else {
       for (const id of ids) {
         const obj = worldObjects[id];
         if (!obj) continue;
-        if (obj.ownership.createdBy !== socket.id) continue;
-        if (destroyObject(id, "daemon_destroy")) destroyedCount += 1;
+        const isCleanup = clients[socket.id]?.daemonType === "cleanup";
+        if (!isCleanup && obj.ownership.createdBy !== socket.id) continue;
+        if (destroyObject(id, isCleanup ? "cleanup_destroy" : "daemon_destroy")) destroyedCount += 1;
       }
     }
 
@@ -472,8 +494,6 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    for (const id of Array.from(socketToObjectIds[socket.id] || [])) destroyObject(id, "socket_disconnect");
-    delete socketToObjectIds[socket.id];
     delete clients[socket.id];
     delete deletedCubesByClient[socket.id];
     pushTelemetry({ t: Date.now(), id: socket.id, kind: "disconnect" });

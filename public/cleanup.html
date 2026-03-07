@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cleanup Daemon</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    html, body { margin:0; padding:0; background:#0b0e12; color:#e6edf3; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    .wrap { padding:16px; max-width: 760px; }
+    button, textarea, input { width:100%; background:#111827; color:#e6edf3; border:1px solid #374151; border-radius:14px; padding:12px 12px; font-size:14px; box-sizing:border-box; }
+    button { cursor:pointer; margin-top: 12px; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .muted { color:#94a3b8; font-size: 12px; line-height: 1.4; }
+    a { color:#93c5fd; }
+    .card { border:1px solid #1f2937; border-radius:16px; padding:12px; background:#0f172a; margin-top:12px; }
+    .danger { background:#2a0f14; border-color:#7f1d1d; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2 style="margin:0 0 8px 0;">Cleanup Daemon</h2>
+    <div class="muted">Use this authenticated helper to clear world objects on purpose. Paste the auth cue from <code>server/cleanup-auth.txt</code> to activate it.</div>
+    <div class="muted" style="margin-top:6px;">Back to world: <a href="/">/</a> &nbsp; Circles: <a href="/circles.html">/circles.html</a></div>
+
+    <div class="card">
+      <div class="muted" style="margin-bottom:6px;">Cleanup auth cue</div>
+      <textarea id="authCue" placeholder="Paste the contents of server/cleanup-auth.txt here"></textarea>
+      <button id="authBtn">Authenticate Cleanup Daemon</button>
+      <div id="authStatus" class="muted" style="margin-top:8px;">Waiting for auth…</div>
+    </div>
+
+    <div class="card">
+      <div class="muted">Safety phrase</div>
+      <input id="confirmText" placeholder="Type WIPE WORLD to enable the button" />
+      <button id="wipeBtn" class="danger" disabled>Delete all world objects</button>
+      <div id="status" class="muted" style="margin-top:8px;">Connecting…</div>
+    </div>
+  </div>
+
+  <script>
+    const socket = io({ transports: ['websocket','polling'] });
+    const authCueEl = document.getElementById('authCue');
+    const authBtn = document.getElementById('authBtn');
+    const authStatus = document.getElementById('authStatus');
+    const confirmText = document.getElementById('confirmText');
+    const wipeBtn = document.getElementById('wipeBtn');
+    const status = document.getElementById('status');
+    let authed = false;
+
+    function sync() {
+      wipeBtn.disabled = !(authed && confirmText.value.trim() === 'WIPE WORLD');
+    }
+    confirmText.addEventListener('input', sync);
+
+    socket.on('connect', () => { status.textContent = 'Connected'; });
+    socket.on('daemonAuthResult', (r) => {
+      authed = !!r.ok;
+      authStatus.textContent = authed ? `Authenticated as ${r.daemonType}` : 'Auth failed';
+      sync();
+    });
+    socket.on('daemonDestroyObjectsResult', (r) => {
+      status.textContent = r.ok ? `Deleted ${r.destroyedCount || 0} objects` : `Delete failed: ${r.reason || 'error'}`;
+      if (r.ok) confirmText.value = '';
+      sync();
+    });
+
+    authBtn.addEventListener('click', () => {
+      socket.emit('daemonHello', { daemonType: 'cleanup', authCue: authCueEl.value });
+    });
+
+    wipeBtn.addEventListener('click', () => {
+      if (!authed) return;
+      socket.emit('daemonDestroyObjectsRequest', { ownedOnly: true });
+      status.textContent = 'World wipe requested';
+    });
+  </script>
+</body>
+</html>
