@@ -124,7 +124,7 @@ function createDrawerUI() {
   // Drawer pane
   const drawer = new BABYLON.GUI.Rectangle("drawerPane");
   drawer.width = "340px";
-  drawer.height = "560px";
+  drawer.height = "440px";
   drawer.cornerRadius = 16;
   drawer.thickness = 1;
   drawer.color = "#374151";
@@ -334,11 +334,8 @@ let selectedId = null;
 
 // Simple visual highlight
 let highlight = null;
-let selectionRing = null;
 try {
   highlight = new BABYLON.HighlightLayer("hl", scene);
-  highlight.outerGlow = true;
-  highlight.innerGlow = true;
 } catch (_) {
   highlight = null;
 }
@@ -347,7 +344,6 @@ function clearSelection() {
   if (highlight && selectedMesh) {
     try { highlight.removeMesh(selectedMesh); } catch (_) {}
   }
-  if (selectionRing) selectionRing.isVisible = false;
   selectedMesh = null;
   selectedLabel = "none";
   selectedLat = null;
@@ -369,10 +365,6 @@ function setSelection(mesh) {
       try { highlight.removeMesh(selectedMesh); } catch (_) {}
     }
     try { highlight.addMesh(mesh, BABYLON.Color3.FromHexString("#FFCC00")); } catch (_) {}
-  }
-
-  if (selectionRing) {
-    selectionRing.isVisible = true;
   }
 
   selectedMesh = mesh;
@@ -484,11 +476,9 @@ const socket = io({
 });
 
 // --- Constants ---
-const PLAYER_POINTER_Y = -9;      // local/remote user marker lower in frame
-const DROPPED_CUBE_Y = -5.5;   // place cubes lower so they do not block the marker
-const PLAYER_POINTER_Y_OFFSET = 0.9; // keep marker just above the ground objects
-const HORIZON_RING_Y_OFFSET = 0.12;  // slight lift to avoid z-fighting
-const HORIZON_RING_RADIUS_M = 14;
+const PLAYER_CUBE_Y  = -9;   // below camera
+const DROPPED_CUBE_Y = -5.5;   // lower so cubes don't block the user marker
+const PLAYER_POINTER_Y_OFFSET = 1.6; // raise player pointer above dropped cubes
 const REMOTE_SPHERE_Y_OFFSET = 10;
 
 const GPS_ALPHA = 0.12;      // smoothing strength (0..1). Higher = more responsive, more jitter.
@@ -525,7 +515,10 @@ let lastTelemAt = 0;
 // Entities
 const playerPointers = {}; // socketId -> pointer mesh (pyramid)
 const droppedCubes = {};  // blockId -> cube mesh
-let localRenderFallbackActive = false;
+
+let localFallbackPointer = null;
+let horizonRing = null;
+let lastGeoErrorCode = null;
 
 // --- Helpers ---
 function shortId(id){ return (id||'').slice(-4); }
@@ -560,36 +553,6 @@ function distMeters(lat1, lon1, lat2, lon2) {
 }
 
 
-function hasUsableLocation() {
-  return isNumber(filtLat) && isNumber(filtLon) || isNumber(rawLat) && isNumber(rawLon);
-}
-
-function getBestLatLon() {
-  if (isNumber(filtLat) && isNumber(filtLon)) return { lat: filtLat, lon: filtLon };
-  if (isNumber(rawLat) && isNumber(rawLon)) return { lat: rawLat, lon: rawLon };
-  return null;
-}
-
-function ensureLocalFallbackMarker() {
-  if (!socket?.id) return null;
-  const ptr = ensurePlayerPointer(socket.id, "#22C55E");
-  const pos = getBestLatLon();
-  if (pos) {
-    const { x, z } = latLonToXZ(pos.lat, pos.lon);
-    ptr.position.set(x, PLAYER_POINTER_Y + PLAYER_POINTER_Y_OFFSET, z);
-    ptr.metadata = { ...(ptr.metadata || {}), lat: pos.lat, lon: pos.lon, kind: "playerPointer", socketId: socket.id, localOnly: true };
-  } else {
-    ptr.position.set(0, PLAYER_POINTER_Y + PLAYER_POINTER_Y_OFFSET, 0);
-    ptr.metadata = { ...(ptr.metadata || {}), kind: "playerPointer", socketId: socket.id, localOnly: true };
-  }
-  localRenderFallbackActive = true;
-  const ring = ensureHorizonRing();
-  ring.position.x = ptr.position.x;
-  ring.position.y = DROPPED_CUBE_Y + HORIZON_RING_Y_OFFSET;
-  ring.position.z = ptr.position.z;
-  return ptr;
-}
-
 function ensurePlayerPointer(id, color) {
   if (playerPointers[id]) return playerPointers[id];
 
@@ -616,60 +579,55 @@ function ensurePlayerPointer(id, color) {
   return p;
 }
 
-
-function ensureSelectionRing() {
-  if (selectionRing) return selectionRing;
-
-  selectionRing = BABYLON.MeshBuilder.CreateTorus("selectionRing", {
-    diameter: 2.4,
-    thickness: 0.08,
-    tessellation: 48
-  }, scene);
-  const mat = new BABYLON.StandardMaterial("selectionRingMat", scene);
-  mat.emissiveColor = BABYLON.Color3.FromHexString("#FFCC00");
-  mat.diffuseColor = BABYLON.Color3.FromHexString("#FFCC00");
-  mat.specularColor = BABYLON.Color3.Black();
-  mat.alpha = 0.95;
-  selectionRing.material = mat;
-  selectionRing.rotation.x = Math.PI / 2;
-  selectionRing.isPickable = false;
-  selectionRing.parent = worldRoot;
-  selectionRing.isVisible = false;
-  return selectionRing;
-}
-
-let horizonRing = null;
-function ensureHorizonRing() {
-  if (horizonRing) return horizonRing;
-
-  const pts = [];
-  const segments = 96;
-  for (let i = 0; i <= segments; i++) {
-    const a = (i / segments) * Math.PI * 2;
-    pts.push(new BABYLON.Vector3(Math.cos(a) * HORIZON_RING_RADIUS_M, 0, Math.sin(a) * HORIZON_RING_RADIUS_M));
-  }
-
-  horizonRing = BABYLON.MeshBuilder.CreateLines("horizonRing", { points: pts, updatable: false }, scene);
-  horizonRing.color = BABYLON.Color3.FromHexString("#7DD3FC");
-  horizonRing.alpha = 0.8;
-  horizonRing.isPickable = false;
-  horizonRing.parent = worldRoot;
-  return horizonRing;
-}
-
 function ensureDroppedCube(blockId, color) {
   if (!droppedCubes[blockId]) {
     const cube = initBox(scene, color);
     cube.name = `droppedCube_${blockId}`;
     cube.parent = worldRoot;
-    cube.isPickable = true;
-    cube.enableEdgesRendering();
-    cube.edgesWidth = 2.0;
-    cube.edgesColor = new BABYLON.Color4(1, 0.8, 0.1, 0.9);
-    cube.metadata = { kind: "droppedCube", blockId: blockId };
-    droppedCubes[blockId] = cube;
+      cube.isPickable = true;
+  cube.metadata = { kind: "droppedCube", blockId: blockId };
+droppedCubes[blockId] = cube;
   }
   return droppedCubes[blockId];
+}
+
+
+function ensureLocalFallbackPointer() {
+  if (!localFallbackPointer) {
+    localFallbackPointer = ensurePlayerPointer("localFallback", "#4CC9F0");
+    localFallbackPointer.metadata = { kind: "playerPointer", socketId: "localFallback" };
+    localFallbackPointer.position.set(0, PLAYER_CUBE_Y, 0);
+  }
+  return localFallbackPointer;
+}
+
+function ensureHorizonRing() {
+  if (!horizonRing) {
+    horizonRing = BABYLON.MeshBuilder.CreateTorus("horizonRing", { diameter: 18, thickness: 0.06, tessellation: 96 }, scene);
+    const m = new BABYLON.StandardMaterial("horizonRingMat", scene);
+    m.emissiveColor = BABYLON.Color3.FromHexString("#4CC9F0");
+    m.diffuseColor = BABYLON.Color3.FromHexString("#4CC9F0");
+    m.specularColor = BABYLON.Color3.Black();
+    horizonRing.material = m;
+    horizonRing.parent = worldRoot;
+    horizonRing.rotation.x = Math.PI / 2;
+    horizonRing.isPickable = false;
+  }
+  return horizonRing;
+}
+
+function updateLocalVisuals() {
+  const ptr = playerPointers[socket.id] || ensureLocalFallbackPointer();
+  if (ptr && isNumber(ptr.position?.x) && isNumber(ptr.position?.z)) {
+    ptr.position.y = PLAYER_CUBE_Y;
+    const ring = ensureHorizonRing();
+    ring.position.set(ptr.position.x, ptr.position.y - 0.35, ptr.position.z);
+    ring.isVisible = true;
+    if (followMe) {
+      worldRoot.position.x = -ptr.position.x;
+      worldRoot.position.z = -ptr.position.z;
+    }
+  }
 }
 
 // Extract yaw from camera quaternion (radians)
@@ -748,7 +706,6 @@ function emitTelemetry(kind, extra = {}) {
 // --- UI wiring ---
 ensureFollowButton();
 ensureSelectionUI();
-ensureSelectionRing();
 if (btnDelete && !btnDelete.__wired) { btnDelete.__wired = true; btnDelete.addEventListener("click", attemptDeleteSelected); }
 if (btnPerm) {
   btnPerm.addEventListener("click", async () => {
@@ -800,9 +757,13 @@ function onGeo(lat, lon, coords) {
     filtLon = filtLon + (lon - filtLon) * GPS_ALPHA;
   }
 
-  // Make the local marker visible immediately, even before the server echoes our state back.
-  ensureLocalFallbackMarker();
-  setUIStatus(`Location ${coords?.accuracy ? `±${Math.round(coords.accuracy)}m` : "ready"}`);
+  if (!worldOrigin) setupProjection({ lat, lon });
+  const p = ensureLocalFallbackPointer();
+  try {
+    const proj = latLonToXZ(filtLat, filtLon);
+    p.position.set(proj.x, PLAYER_CUBE_Y, proj.z);
+  } catch (_) {}
+  updateLocalVisuals();
 
   // Emit telemetry with sensor metadata (accuracy/speed/heading)
   if (coords) {
@@ -846,8 +807,11 @@ if ("geolocation" in navigator) {
       if (isNumber(lat) && isNumber(lon)) onGeo(lat, lon, pos.coords);
     },
     (err) => {
-      setUIStatus(`Location error${err?.code ? ` (${err.code})` : ""}`);
-      ensureLocalFallbackMarker();
+      lastGeoErrorCode = err?.code ?? "?";
+      setUIStatus(`Location error (${lastGeoErrorCode})`);
+      ensureLocalFallbackPointer();
+      updateLocalVisuals();
+      emitTelemetry("geoError", { code: err?.code, message: err?.message || null });
     },
     {
       enableHighAccuracy: true,
@@ -869,7 +833,7 @@ function reconcileWorld(state) {
   const clientIds = Object.keys(state.clients || {});
   const blockCount = (state.droppedBlocks || []).length;
 
-  setUIStatus(`Connected (${shortId(socket.id)})`);
+  setUIStatus(`Connected (${shortId(socket.id)})${lastGeoErrorCode ? ` | Location error (${lastGeoErrorCode})` : ""}`);
   setUICounts(clientIds.length, blockCount, myDeletedCount);
 
   // Players (pointers only; no cubes/spheres)
@@ -878,7 +842,7 @@ function reconcileWorld(state) {
 
     if (isNumber(c.lat) && isNumber(c.lon)) {
       const { x, z } = latLonToXZ(c.lat, c.lon);
-      ptr.position.set(x, PLAYER_POINTER_Y + PLAYER_POINTER_Y_OFFSET, z);
+      ptr.position.set(x, DROPPED_CUBE_Y + PLAYER_POINTER_Y_OFFSET, z);
       ptr.metadata = { ...(ptr.metadata || {}), lat: c.lat, lon: c.lon, kind: "playerPointer", socketId: id };
     }
 
@@ -898,27 +862,13 @@ function reconcileWorld(state) {
     }
   }
 
-  const serverHasMe = !!(socket.id && state.clients && state.clients[socket.id]);
-  if (!serverHasMe) {
-    ensureLocalFallbackMarker();
-  } else {
-    localRenderFallbackActive = false;
+  // Prefer the server-backed local marker; otherwise show the local fallback marker.
+  if (playerPointers[socket.id]) {
+    if (localFallbackPointer) localFallbackPointer.isVisible = false;
+  } else if (localFallbackPointer) {
+    localFallbackPointer.isVisible = true;
   }
-
-  // Follow mode: translate the world so the local player marker stays centered under the camera.
-  if (socket.id && playerPointers[socket.id]) {
-    const me = playerPointers[socket.id];
-
-    const ring = ensureHorizonRing();
-    ring.position.x = me.position.x;
-    ring.position.y = DROPPED_CUBE_Y + HORIZON_RING_Y_OFFSET;
-    ring.position.z = me.position.z;
-
-    if (followMe) {
-      worldRoot.position.x = -me.position.x;
-      worldRoot.position.z = -me.position.z;
-    }
-  }
+  updateLocalVisuals();
 
   // Dropped cubes (create/update)
   const presentBlocks = new Set();
@@ -982,7 +932,9 @@ socket.on("deleteResult", (r) => {
 });
 
 socket.on("connect", () => {
-  setUIStatus("Connected | waiting for world state/location");
+  setUIStatus("Connected");
+  ensureLocalFallbackPointer();
+  updateLocalVisuals();
   emitTelemetry("connect", { id: socket.id });
 });
 
@@ -999,22 +951,15 @@ engine.runRenderLoop(() => {
   applyHeadingStabilization();
   maybeSendOrientationUpdate();
   updateSelectionHUD();
-
-  if (socket?.connected && !playerPointers[socket.id]) {
-    ensureLocalFallbackMarker();
-  }
-
-  if (selectionRing && selectedMesh && !selectedMesh.isDisposed?.()) {
-    const bb = selectedMesh.getBoundingInfo?.().boundingBox;
-    const radius = bb ? Math.max(selectedMesh.scaling.x, selectedMesh.scaling.z, bb.extendSizeWorld.x * 2, bb.extendSizeWorld.z * 2) : 1.2;
-    selectionRing.position.x = selectedMesh.position.x;
-    selectionRing.position.y = selectedMesh.position.y + 0.08;
-    selectionRing.position.z = selectedMesh.position.z;
-    const pulse = 1 + 0.08 * Math.sin(performance.now() * 0.01);
-    selectionRing.scaling.set(radius * pulse, radius * pulse, 1);
-  }
-
+  updateLocalVisuals();
   scene.render();
 });
 
 window.addEventListener("resize", () => engine.resize());
+
+
+if (!("geolocation" in navigator)) {
+  setUIStatus("Geolocation unavailable");
+  ensureLocalFallbackPointer();
+  updateLocalVisuals();
+}
