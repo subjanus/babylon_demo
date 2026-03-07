@@ -247,7 +247,7 @@ function createDrawerUI() {
   mkButton("uiDrop", "Drop Cube", () => {
     const lat = isNumber(filtLat) ? filtLat : rawLat;
     const lon = isNumber(filtLon) ? filtLon : rawLon;
-    if (!isNumber(lat) || !isNumber(lon)) return;
+    if (!isNumber(lat) || !isNumber(lon)) { setUIStatus("Waiting for location before drop"); return; }
     socket.emit("dropCube", { lat, lon });
     emitTelemetry("drop", { lat, lon });
   });
@@ -525,6 +525,7 @@ let lastTelemAt = 0;
 // Entities
 const playerPointers = {}; // socketId -> pointer mesh (pyramid)
 const droppedCubes = {};  // blockId -> cube mesh
+let localRenderFallbackActive = false;
 
 // --- Helpers ---
 function shortId(id){ return (id||'').slice(-4); }
@@ -558,6 +559,36 @@ function distMeters(lat1, lon1, lat2, lon2) {
   return Math.hypot(a.x - b.x, a.z - b.z);
 }
 
+
+function hasUsableLocation() {
+  return isNumber(filtLat) && isNumber(filtLon) || isNumber(rawLat) && isNumber(rawLon);
+}
+
+function getBestLatLon() {
+  if (isNumber(filtLat) && isNumber(filtLon)) return { lat: filtLat, lon: filtLon };
+  if (isNumber(rawLat) && isNumber(rawLon)) return { lat: rawLat, lon: rawLon };
+  return null;
+}
+
+function ensureLocalFallbackMarker() {
+  if (!socket?.id) return null;
+  const ptr = ensurePlayerPointer(socket.id, "#22C55E");
+  const pos = getBestLatLon();
+  if (pos) {
+    const { x, z } = latLonToXZ(pos.lat, pos.lon);
+    ptr.position.set(x, PLAYER_POINTER_Y + PLAYER_POINTER_Y_OFFSET, z);
+    ptr.metadata = { ...(ptr.metadata || {}), lat: pos.lat, lon: pos.lon, kind: "playerPointer", socketId: socket.id, localOnly: true };
+  } else {
+    ptr.position.set(0, PLAYER_POINTER_Y + PLAYER_POINTER_Y_OFFSET, 0);
+    ptr.metadata = { ...(ptr.metadata || {}), kind: "playerPointer", socketId: socket.id, localOnly: true };
+  }
+  localRenderFallbackActive = true;
+  const ring = ensureHorizonRing();
+  ring.position.x = ptr.position.x;
+  ring.position.y = DROPPED_CUBE_Y + HORIZON_RING_Y_OFFSET;
+  ring.position.z = ptr.position.z;
+  return ptr;
+}
 
 function ensurePlayerPointer(id, color) {
   if (playerPointers[id]) return playerPointers[id];
@@ -749,7 +780,7 @@ if (btnDrop) {
   btnDrop.addEventListener("click", () => {
     const lat = isNumber(filtLat) ? filtLat : rawLat;
     const lon = isNumber(filtLon) ? filtLon : rawLon;
-    if (!isNumber(lat) || !isNumber(lon)) return;
+    if (!isNumber(lat) || !isNumber(lon)) { setUIStatus("Waiting for location before drop"); return; }
 
     socket.emit("dropCube", { lat, lon });
     emitTelemetry("drop", { lat, lon });
@@ -768,6 +799,10 @@ function onGeo(lat, lon, coords) {
     filtLat = filtLat + (lat - filtLat) * GPS_ALPHA;
     filtLon = filtLon + (lon - filtLon) * GPS_ALPHA;
   }
+
+  // Make the local marker visible immediately, even before the server echoes our state back.
+  ensureLocalFallbackMarker();
+  setUIStatus(`Location ${coords?.accuracy ? `±${Math.round(coords.accuracy)}m` : "ready"}`);
 
   // Emit telemetry with sensor metadata (accuracy/speed/heading)
   if (coords) {
@@ -810,7 +845,10 @@ if ("geolocation" in navigator) {
       const lon = pos.coords.longitude;
       if (isNumber(lat) && isNumber(lon)) onGeo(lat, lon, pos.coords);
     },
-    () => {},
+    (err) => {
+      setUIStatus(`Location error${err?.code ? ` (${err.code})` : ""}`);
+      ensureLocalFallbackMarker();
+    },
     {
       enableHighAccuracy: true,
       maximumAge: 1000,
@@ -858,6 +896,13 @@ function reconcileWorld(state) {
       playerPointers[id].dispose();
       delete playerPointers[id];
     }
+  }
+
+  const serverHasMe = !!(socket.id && state.clients && state.clients[socket.id]);
+  if (!serverHasMe) {
+    ensureLocalFallbackMarker();
+  } else {
+    localRenderFallbackActive = false;
   }
 
   // Follow mode: translate the world so the local player marker stays centered under the camera.
@@ -937,7 +982,7 @@ socket.on("deleteResult", (r) => {
 });
 
 socket.on("connect", () => {
-  setUIStatus("Connected");
+  setUIStatus("Connected | waiting for world state/location");
   emitTelemetry("connect", { id: socket.id });
 });
 
@@ -954,6 +999,10 @@ engine.runRenderLoop(() => {
   applyHeadingStabilization();
   maybeSendOrientationUpdate();
   updateSelectionHUD();
+
+  if (socket?.connected && !playerPointers[socket.id]) {
+    ensureLocalFallbackMarker();
+  }
 
   if (selectionRing && selectedMesh && !selectedMesh.isDisposed?.()) {
     const bb = selectedMesh.getBoundingInfo?.().boundingBox;
