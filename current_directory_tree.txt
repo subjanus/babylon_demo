@@ -1,0 +1,21 @@
+.
+├── current_directory_tree.txt
+├── demo client project.code-workspace
+├── last_update_to_project_chatgpt
+├── package.json
+├── public
+│   ├── circles.html
+│   ├── debug.html
+│   ├── geo_PATCH_SNIPPET.js
+│   ├── geo.js
+│   ├── index.html
+│   ├── initBox.js
+│   ├── initCamera.js
+│   ├── initScene.js
+│   ├── main.js
+│   └── requestPermissions.js
+├── publish.bat
+└── server
+    └── index.js
+
+3 directories, 16 files
