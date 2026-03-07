@@ -41,3 +41,25 @@ export function parseAnchorInput(text) {
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   return { lat, lon, anchorId };
 }
+
+
+// Convert local X/Z meters back into an approximate lat/lon around a reference point.
+export function localToLatLon(x, z, refLat, refLon) {
+  const φ = toRad(refLat);
+  const mPerDegLat = 111132.92 - 559.82 * Math.cos(2 * φ) + 1.175 * Math.cos(4 * φ);
+  const mPerDegLon = 111412.84 * Math.cos(φ) - 93.5 * Math.cos(3 * φ);
+  return {
+    lat: refLat - (z / mPerDegLat),
+    lon: refLon + (x / mPerDegLon)
+  };
+}
+
+// Reproject a local point from one shared reference point into another.
+export function rebaseLocalPoint(point, fromRefLat, fromRefLon, toRefLat, toRefLon) {
+  if (!point) return { x: 0, z: 0 };
+  if (![fromRefLat, fromRefLon, toRefLat, toRefLon].every(Number.isFinite)) {
+    return { x: Number(point.x) || 0, z: Number(point.z) || 0 };
+  }
+  const world = localToLatLon(Number(point.x) || 0, Number(point.z) || 0, fromRefLat, fromRefLon);
+  return latLonToLocal(world.lat, world.lon, toRefLat, toRefLon);
+}

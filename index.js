@@ -14,7 +14,7 @@ app.get("/", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
 const COLORS = ["#00A3FF", "#FFCC00", "#34D399", "#F472B6", "#F59E0B", "#22D3EE", "#A78BFA"];
 let nextColorIdx = 0;
 
-const clients = {};   // id -> { x, z, yaw, color, anchorId, accuracyM, lastPoseAt }
+const clients = {};   // id -> { x, z, yaw, color, anchorId, refLat, refLon, accuracyM, lastPoseAt }
 const objects = [];   // dynamic world objects
 const daemons = {};   // id -> { label, capabilities, connectedAt }
 const deletedObjectsByClient = {};
@@ -41,6 +41,36 @@ function distXZ(a, b) {
   return Math.hypot((b.x || 0) - (a.x || 0), (b.z || 0) - (a.z || 0));
 }
 
+function metersPerDeg(refLat) {
+  const φ = refLat * Math.PI / 180;
+  return {
+    lat: 111132.92 - 559.82 * Math.cos(2 * φ) + 1.175 * Math.cos(4 * φ),
+    lon: 111412.84 * Math.cos(φ) - 93.5 * Math.cos(3 * φ)
+  };
+}
+
+function localToLatLon(x, z, refLat, refLon) {
+  const m = metersPerDeg(refLat);
+  return {
+    lat: refLat - ((Number(z) || 0) / m.lat),
+    lon: refLon + ((Number(x) || 0) / m.lon)
+  };
+}
+
+function distanceRelative(a, b) {
+  const aRefLat = isNumber(a.refLat) ? a.refLat : 0;
+  const aRefLon = isNumber(a.refLon) ? a.refLon : 0;
+  const bRefLat = isNumber(b.refLat) ? b.refLat : 0;
+  const bRefLon = isNumber(b.refLon) ? b.refLon : 0;
+  const aWorld = localToLatLon(a.x, a.z, aRefLat, aRefLon);
+  const bWorld = localToLatLon(b.x, b.z, bRefLat, bRefLon);
+  const avgLat = (aWorld.lat + bWorld.lat) / 2;
+  const m = metersPerDeg(avgLat);
+  const dx = (bWorld.lon - aWorld.lon) * m.lon;
+  const dz = (aWorld.lat - bWorld.lat) * m.lat;
+  return Math.hypot(dx, dz);
+}
+
 function getVisibleClients() {
   const out = {};
   for (const [id, c] of Object.entries(clients)) {
@@ -51,6 +81,8 @@ function getVisibleClients() {
       yaw: c.yaw || 0,
       color: c.color,
       anchorId: c.anchorId || "private-anchor",
+      refLat: c.refLat ?? 0,
+      refLon: c.refLon ?? 0,
       accuracyM: c.accuracyM ?? null,
       lastPoseAt: c.lastPoseAt || null,
       isDaemon: false
@@ -106,6 +138,9 @@ function sanitizeObject(input, fallbackOwner) {
     },
     trigger,
     owner: String(input.owner || fallbackOwner || "user"),
+    anchorId: typeof input.anchorId === "string" ? input.anchorId.slice(0, 64) : "private-anchor",
+    refLat: isNumber(Number(input.refLat)) ? clamp(Number(input.refLat), -90, 90) : 0,
+    refLon: isNumber(Number(input.refLon)) ? clamp(Number(input.refLon), -180, 180) : 0,
     ttlMs: isNumber(Number(input.ttlMs)) ? clamp(Number(input.ttlMs), 0, 86400000) : 0,
     createdAt: Date.now()
   };
@@ -140,7 +175,7 @@ io.on("connection", (socket) => {
   const color = COLORS[nextColorIdx % COLORS.length];
   nextColorIdx += 1;
 
-  clients[socket.id] = { x: 0, y: -5, z: 0, yaw: 0, color, anchorId: "private-anchor", accuracyM: null, lastPoseAt: null };
+  clients[socket.id] = { x: 0, y: -5, z: 0, yaw: 0, color, anchorId: "private-anchor", refLat: 0, refLon: 0, accuracyM: null, lastPoseAt: null };
   deletedObjectsByClient[socket.id] = 0;
   socket.emit("myCounters", { deletedCubes: 0, deletedObjects: 0 });
   pushTelemetry({ t: Date.now(), id: socket.id, kind: "connect", color });
@@ -159,10 +194,12 @@ io.on("connection", (socket) => {
     me.y = isNumber(Number(payload.y)) ? clamp(Number(payload.y), -5000, 5000) : -5;
     if (isNumber(Number(payload.yaw))) me.yaw = Number(payload.yaw);
     me.anchorId = typeof payload.anchorId === "string" ? payload.anchorId.slice(0, 64) : "private-anchor";
+    me.refLat = isNumber(Number(payload.refLat)) ? clamp(Number(payload.refLat), -90, 90) : 0;
+    me.refLon = isNumber(Number(payload.refLon)) ? clamp(Number(payload.refLon), -180, 180) : 0;
     me.accuracyM = isNumber(Number(payload.accuracyM)) ? clamp(Number(payload.accuracyM), 0, 10000) : null;
     me.lastPoseAt = Date.now();
 
-    pushTelemetry({ t: Date.now(), id: socket.id, kind: "poseUpdate", x: me.x, z: me.z, anchorId: me.anchorId, accuracyM: me.accuracyM });
+    pushTelemetry({ t: Date.now(), id: socket.id, kind: "poseUpdate", x: me.x, z: me.z, anchorId: me.anchorId, refLat: me.refLat, refLon: me.refLon, accuracyM: me.accuracyM });
     emitWorldState();
   });
 
@@ -176,7 +213,7 @@ io.on("connection", (socket) => {
   socket.on("createObjectRequest", ({ object } = {}) => {
     const me = clients[socket.id];
     if (!me) return;
-    const safe = sanitizeObject(object, `player:${socket.id}`);
+    const safe = sanitizeObject({ ...object, anchorId: object?.anchorId || me.anchorId, refLat: object?.refLat ?? me.refLat, refLon: object?.refLon ?? me.refLon }, `player:${socket.id}`);
     if (!safe) return;
     objects.push(safe);
     pushTelemetry({ t: Date.now(), id: socket.id, kind: "createObjectRequest", objectId: safe.id, type: safe.type });
@@ -202,7 +239,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const d = distXZ(me, obj);
+    const d = distanceRelative(me, obj);
     if (d > MAX_DELETE_M) {
       socket.emit("deleteResult", { ok: false, objectId: idNum, reason: "too_far", distM: d, maxM: MAX_DELETE_M });
       return;
@@ -300,7 +337,10 @@ io.on("connection", (socket) => {
           scale: { x: 1 + Math.random() * 1.6, y: 0.25, z: 1 + Math.random() * 1.6 },
           style: { color: "#34D399", alpha: 0.8 },
           trigger: { kind: "proximity", radius: 2.5 },
-          owner: `daemon:${daemons[socket.id].label}:target:${id}`
+          owner: `daemon:${daemons[socket.id].label}:target:${id}`,
+          anchorId: c.anchorId || "private-anchor",
+          refLat: c.refLat ?? 0,
+          refLon: c.refLon ?? 0
         }, `daemon:${daemons[socket.id].label}`);
         if (!safe) continue;
         objects.push(safe);

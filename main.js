@@ -2,7 +2,7 @@ import { initScene } from "./initScene.js";
 import { initCamera } from "./initCamera.js";
 import { requestDevicePermissions } from "./requestPermissions.js";
 import { initBox } from "./initBox.js";
-import { latLonToLocal, distanceXZ, parseAnchorInput, sanitizeAnchorId } from "./geo.js";
+import { latLonToLocal, distanceXZ, parseAnchorInput, sanitizeAnchorId, rebaseLocalPoint } from "./geo.js";
 
 const canvas = document.getElementById("renderCanvas");
 const statusEl = document.getElementById("status");
@@ -45,7 +45,6 @@ let lastSentPose = null;
 let lastSentAt = 0;
 
 let anchor = loadAnchor();
-let anchorPromptShown = false;
 
 const playerPointers = {};
 const worldObjects = {};
@@ -60,6 +59,9 @@ let uiCountsText = null;
 let uiSelectedText = null;
 let uiDeleteBtn = null;
 let uiAnchorText = null;
+let uiAnchorLatInput = null;
+let uiAnchorLonInput = null;
+let uiAnchorIdInput = null;
 
 let highlight = null;
 try {
@@ -89,19 +91,18 @@ function setSelectionText(text, canDelete) {
 
 function setAnchorText() {
   if (!uiAnchorText) return;
-  if (anchor) uiAnchorText.text = `Anchor: ${anchor.anchorId} (${anchor.lat.toFixed(5)}, ${anchor.lon.toFixed(5)})`;
-  else uiAnchorText.text = "Anchor: not set";
+  uiAnchorText.text = `Reference: ${anchor.anchorId} (${anchor.lat.toFixed(5)}, ${anchor.lon.toFixed(5)})`;
 }
 
 function loadAnchor() {
   try {
     const raw = localStorage.getItem("privateWorldAnchor");
-    if (!raw) return null;
+    if (!raw) return { lat: 0, lon: 0, anchorId: "private-anchor" };
     const parsed = JSON.parse(raw);
-    if (!isNumber(parsed.lat) || !isNumber(parsed.lon)) return null;
+    if (!isNumber(parsed.lat) || !isNumber(parsed.lon)) return { lat: 0, lon: 0, anchorId: "private-anchor" };
     return { lat: parsed.lat, lon: parsed.lon, anchorId: sanitizeAnchorId(parsed.anchorId || "private-anchor") };
   } catch (_) {
-    return null;
+    return { lat: 0, lon: 0, anchorId: "private-anchor" };
   }
 }
 
@@ -114,25 +115,45 @@ function saveAnchor(next) {
 }
 
 function promptForAnchor(prefill) {
-  const starter = prefill || (anchor ? `${anchor.lat}, ${anchor.lon}, ${anchor.anchorId}` : "36.00143, -78.93823, duke-demo");
-  const answer = window.prompt("Enter private anchor as: latitude, longitude, anchorId", starter);
+  const starter = prefill || `${anchor.lat}, ${anchor.lon}, ${anchor.anchorId}`;
+  const answer = window.prompt("Enter reference point as: latitude, longitude, anchorId", starter);
   const parsed = parseAnchorInput(answer);
   if (!parsed) return false;
   saveAnchor(parsed);
-  emitTelemetry("anchor", { anchorId: parsed.anchorId });
+  syncAnchorInputs();
+  emitTelemetry("anchor", { anchorId: parsed.anchorId, refLat: parsed.lat, refLon: parsed.lon });
   maybeSendPose(true);
   return true;
 }
 
-function maybeBootstrapAnchorFromGPS() {
-  if (anchor || anchorPromptShown || !isNumber(rawLat) || !isNumber(rawLon)) return;
-  anchorPromptShown = true;
-  const useHere = window.confirm("No private anchor is set. Use your current location as a local-only private anchor?");
-  if (useHere) {
-    saveAnchor({ lat: rawLat, lon: rawLon, anchorId: "private-anchor" });
-    maybeSendPose(true);
-  }
+function getAnchorPayload() {
+  return {
+    anchorId: anchor.anchorId,
+    refLat: anchor.lat,
+    refLon: anchor.lon
+  };
 }
+
+function syncAnchorInputs() {
+  if (uiAnchorLatInput) uiAnchorLatInput.text = String(anchor.lat);
+  if (uiAnchorLonInput) uiAnchorLonInput.text = String(anchor.lon);
+  if (uiAnchorIdInput) uiAnchorIdInput.text = anchor.anchorId;
+}
+
+function saveAnchorFromInputs() {
+  const parsed = parseAnchorInput(`${uiAnchorLatInput?.text || "0"}, ${uiAnchorLonInput?.text || "0"}, ${uiAnchorIdInput?.text || "private-anchor"}`);
+  if (!parsed) {
+    setStatus("Reference point is invalid");
+    return false;
+  }
+  saveAnchor(parsed);
+  syncAnchorInputs();
+  setStatus(`Reference saved: ${parsed.anchorId}`);
+  emitTelemetry("anchor", { anchorId: parsed.anchorId, refLat: parsed.lat, refLon: parsed.lon });
+  maybeSendPose(true);
+  return true;
+}
+
 
 function currentPose() {
   if (!anchor) return null;
@@ -145,7 +166,7 @@ function currentPose() {
     z: local.z,
     yaw: getCameraYawRad(),
     accuracyM: null,
-    anchorId: anchor.anchorId
+    ...getAnchorPayload()
   };
 }
 
@@ -266,6 +287,7 @@ function emitTelemetry(kind, extra = {}) {
   socket.emit("telemetry", {
     kind,
     anchorId: anchor?.anchorId || null,
+    reference: anchor ? { anchorId: anchor.anchorId, refLat: anchor.lat, refLon: anchor.lon } : null,
     pose: currentPose(),
     yaw: getCameraYawRad(),
     extra
@@ -408,7 +430,7 @@ function createDrawerUI() {
   uiCountsText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
   root.addControl(uiCountsText);
 
-  uiAnchorText = new BABYLON.GUI.TextBlock("uiAnchor", "Anchor: not set");
+  uiAnchorText = new BABYLON.GUI.TextBlock("uiAnchor", "Reference: private-anchor (0.00000, 0.00000)");
   uiAnchorText.color = "#cbd5e1";
   uiAnchorText.fontSize = 12;
   uiAnchorText.height = "54px";
@@ -456,7 +478,41 @@ function createDrawerUI() {
     b.textBlock.text = ok ? "Motion Enabled" : "Motion Blocked";
   });
 
-  addButton("uiAnchorBtn", "Set Private Anchor", () => {
+  const refLabel = new BABYLON.GUI.TextBlock("uiRefLabel", "Reference point (shared, raw GPS stays local)");
+  refLabel.color = "#cbd5e1";
+  refLabel.fontSize = 12;
+  refLabel.height = "20px";
+  refLabel.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+  root.addControl(refLabel);
+
+
+  function addInput(name, placeholder, value) {
+    const input = new BABYLON.GUI.InputText(name);
+    input.width = "100%";
+    input.maxWidth = 0.95;
+    input.height = "36px";
+    input.color = "#e6edf3";
+    input.background = "#111827";
+    input.focusedBackground = "#0f172a";
+    input.thickness = 1;
+    input.cornerRadius = 10;
+    input.placeholderText = placeholder;
+    input.text = value;
+    input.paddingTop = "4px";
+    input.paddingBottom = "2px";
+    root.addControl(input);
+    return input;
+  }
+
+  uiAnchorLatInput = addInput("uiAnchorLat", "Reference latitude", String(anchor.lat));
+  uiAnchorLonInput = addInput("uiAnchorLon", "Reference longitude", String(anchor.lon));
+  uiAnchorIdInput = addInput("uiAnchorId", "Reference ID", anchor.anchorId);
+
+  addButton("uiAnchorBtn", "Save Reference Point", () => {
+    saveAnchorFromInputs();
+  });
+
+  addButton("uiAnchorPrompt", "Edit Reference in Prompt", () => {
     promptForAnchor();
   });
 
@@ -472,7 +528,8 @@ function createDrawerUI() {
         y: OBJECT_Y,
         z: pose.z,
         scale: { x: 1, y: 1, z: 1 },
-        style: { color: "#34D399", alpha: 1 }
+        style: { color: "#34D399", alpha: 1 },
+        ...getAnchorPayload()
       }
     });
   });
@@ -510,7 +567,6 @@ function onGeo(lat, lon, coords) {
     filtLat = filtLat + (lat - filtLat) * GPS_ALPHA;
     filtLon = filtLon + (lon - filtLon) * GPS_ALPHA;
   }
-  maybeBootstrapAnchorFromGPS();
   emitTelemetry("gps", { accuracy: coords?.accuracy || null });
   maybeSendPose(false, coords || null);
 }
@@ -524,9 +580,16 @@ function reconcileWorld(state) {
 
   for (const [id, c] of Object.entries(clients)) {
     const ptr = ensurePlayerPointer(id, c.color);
-    ptr.position.set(c.x || 0, PLAYER_Y + PLAYER_POINTER_Y_OFFSET, c.z || 0);
+    const rebased = rebaseLocalPoint(
+      { x: c.x || 0, z: c.z || 0 },
+      c.refLat,
+      c.refLon,
+      anchor.lat,
+      anchor.lon
+    );
+    ptr.position.set(rebased.x, PLAYER_Y + PLAYER_POINTER_Y_OFFSET, rebased.z);
     ptr.rotation.y = (c.yaw || 0) - worldRoot.rotation.y;
-    ptr.metadata = { kind: "playerPointer", socketId: id };
+    ptr.metadata = { kind: "playerPointer", socketId: id, x: rebased.x, z: rebased.z };
   }
 
   for (const id of Object.keys(playerPointers)) {
@@ -549,7 +612,14 @@ function reconcileWorld(state) {
   for (const object of objects) {
     seen.add(String(object.id));
     const mesh = ensureObjectMesh(object);
-    applyObjectVisuals(mesh, object);
+    const rebased = rebaseLocalPoint(
+      { x: object.x || 0, z: object.z || 0 },
+      object.refLat,
+      object.refLon,
+      anchor.lat,
+      anchor.lon
+    );
+    applyObjectVisuals(mesh, { ...object, x: rebased.x, z: rebased.z });
   }
 
   for (const id of Object.keys(worldObjects)) {
@@ -616,6 +686,7 @@ if ("geolocation" in navigator) {
 addHorizonRing();
 ui = createDrawerUI();
 setAnchorText();
+syncAnchorInputs();
 window.__scene = scene;
 window.__setPrivateAnchor = promptForAnchor;
 
