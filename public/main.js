@@ -247,7 +247,7 @@ function createDrawerUI() {
   mkButton("uiDrop", "Drop Cube", () => {
     const lat = isNumber(filtLat) ? filtLat : rawLat;
     const lon = isNumber(filtLon) ? filtLon : rawLon;
-    if (!isNumber(lat) || !isNumber(lon)) { setUIStatus("Waiting for location before drop"); return; }
+    if (!isNumber(lat) || !isNumber(lon)) return;
     socket.emit("dropCube", { lat, lon });
     emitTelemetry("drop", { lat, lon });
   });
@@ -476,9 +476,11 @@ const socket = io({
 });
 
 // --- Constants ---
-const PLAYER_CUBE_Y  = -9;   // below camera
-const DROPPED_CUBE_Y = -5.5;   // lower so cubes don't block the user marker
-const PLAYER_POINTER_Y_OFFSET = 1.6; // raise player pointer above dropped cubes
+const PLAYER_CUBE_Y  = -5.8; // user marker sits just below camera
+const DROPPED_CUBE_Y = -5.5;  // cubes sit lower and stop blocking the user marker
+const PLAYER_POINTER_Y_OFFSET = 0; // player pointer uses absolute Y now
+const HORIZON_RING_Y_OFFSET = -5.75;
+const HORIZON_RING_RADIUS = 8;
 const REMOTE_SPHERE_Y_OFFSET = 10;
 
 const GPS_ALPHA = 0.12;      // smoothing strength (0..1). Higher = more responsive, more jitter.
@@ -515,10 +517,8 @@ let lastTelemAt = 0;
 // Entities
 const playerPointers = {}; // socketId -> pointer mesh (pyramid)
 const droppedCubes = {};  // blockId -> cube mesh
-
 let localFallbackPointer = null;
 let horizonRing = null;
-let lastGeoErrorCode = null;
 
 // --- Helpers ---
 function shortId(id){ return (id||'').slice(-4); }
@@ -584,50 +584,60 @@ function ensureDroppedCube(blockId, color) {
     const cube = initBox(scene, color);
     cube.name = `droppedCube_${blockId}`;
     cube.parent = worldRoot;
-      cube.isPickable = true;
-  cube.metadata = { kind: "droppedCube", blockId: blockId };
-droppedCubes[blockId] = cube;
+    cube.isPickable = true;
+    cube.enableEdgesRendering();
+    cube.edgesWidth = 2.0;
+    cube.edgesColor = new BABYLON.Color4(1, 1, 1, 0.45);
+    cube.metadata = { kind: "droppedCube", blockId: blockId };
+    droppedCubes[blockId] = cube;
   }
   return droppedCubes[blockId];
 }
 
-
 function ensureLocalFallbackPointer() {
-  if (!localFallbackPointer) {
-    localFallbackPointer = ensurePlayerPointer("localFallback", "#4CC9F0");
-    localFallbackPointer.metadata = { kind: "playerPointer", socketId: "localFallback" };
-    localFallbackPointer.position.set(0, PLAYER_CUBE_Y, 0);
-  }
+  if (localFallbackPointer) return localFallbackPointer;
+  localFallbackPointer = ensurePlayerPointer("local_fallback", "#FFCC00");
+  localFallbackPointer.isPickable = false;
+  localFallbackPointer.metadata = { kind: "playerPointer", socketId: "local_fallback" };
   return localFallbackPointer;
 }
 
 function ensureHorizonRing() {
-  if (!horizonRing) {
-    horizonRing = BABYLON.MeshBuilder.CreateTorus("horizonRing", { diameter: 18, thickness: 0.06, tessellation: 96 }, scene);
-    const m = new BABYLON.StandardMaterial("horizonRingMat", scene);
-    m.emissiveColor = BABYLON.Color3.FromHexString("#4CC9F0");
-    m.diffuseColor = BABYLON.Color3.FromHexString("#4CC9F0");
-    m.specularColor = BABYLON.Color3.Black();
-    horizonRing.material = m;
-    horizonRing.parent = worldRoot;
-    horizonRing.rotation.x = Math.PI / 2;
-    horizonRing.isPickable = false;
-  }
+  if (horizonRing) return horizonRing;
+  horizonRing = BABYLON.MeshBuilder.CreateTorus("horizonRing", {
+    diameter: HORIZON_RING_RADIUS * 2,
+    thickness: 0.06,
+    tessellation: 96
+  }, scene);
+  const mat = new BABYLON.StandardMaterial("horizonRingMat", scene);
+  mat.emissiveColor = BABYLON.Color3.FromHexString("#60A5FA");
+  mat.diffuseColor = BABYLON.Color3.FromHexString("#60A5FA");
+  mat.specularColor = BABYLON.Color3.Black();
+  horizonRing.material = mat;
+  horizonRing.parent = worldRoot;
+  horizonRing.rotation.x = Math.PI / 2;
+  horizonRing.isPickable = false;
   return horizonRing;
 }
 
 function updateLocalVisuals() {
-  const ptr = playerPointers[socket.id] || ensureLocalFallbackPointer();
-  if (ptr && isNumber(ptr.position?.x) && isNumber(ptr.position?.z)) {
-    ptr.position.y = PLAYER_CUBE_Y;
-    const ring = ensureHorizonRing();
-    ring.position.set(ptr.position.x, ptr.position.y - 0.35, ptr.position.z);
-    ring.isVisible = true;
-    if (followMe) {
-      worldRoot.position.x = -ptr.position.x;
-      worldRoot.position.z = -ptr.position.z;
-    }
+  const ptr = ensureLocalFallbackPointer();
+  const ring = ensureHorizonRing();
+
+  let x = 0, z = 0;
+  if (worldOrigin && isNumber(filtLat) && isNumber(filtLon)) {
+    const p = latLonToXZ(filtLat, filtLon);
+    x = p.x; z = p.z;
   }
+
+  ptr.position.set(x, PLAYER_CUBE_Y, z);
+  ptr.rotation.y = -worldRoot.rotation.y;
+  ring.position.set(x, HORIZON_RING_Y_OFFSET, z);
+
+  const authoritative = socket.id && playerPointers[socket.id] && playerPointers[socket.id] !== localFallbackPointer
+    && isNumber(playerPointers[socket.id].position?.x);
+  ptr.isVisible = !authoritative;
+  ring.isVisible = true;
 }
 
 // Extract yaw from camera quaternion (radians)
@@ -757,14 +767,6 @@ function onGeo(lat, lon, coords) {
     filtLon = filtLon + (lon - filtLon) * GPS_ALPHA;
   }
 
-  if (!worldOrigin) setupProjection({ lat, lon });
-  const p = ensureLocalFallbackPointer();
-  try {
-    const proj = latLonToXZ(filtLat, filtLon);
-    p.position.set(proj.x, PLAYER_CUBE_Y, proj.z);
-  } catch (_) {}
-  updateLocalVisuals();
-
   // Emit telemetry with sensor metadata (accuracy/speed/heading)
   if (coords) {
     emitTelemetry("gps", {
@@ -807,11 +809,9 @@ if ("geolocation" in navigator) {
       if (isNumber(lat) && isNumber(lon)) onGeo(lat, lon, pos.coords);
     },
     (err) => {
-      lastGeoErrorCode = err?.code ?? "?";
-      setUIStatus(`Location error (${lastGeoErrorCode})`);
-      ensureLocalFallbackPointer();
+      setUIStatus(`Location error (${err?.code ?? "?"})`);
+      emitTelemetry("geoError", { code: err?.code ?? null, message: err?.message ?? null });
       updateLocalVisuals();
-      emitTelemetry("geoError", { code: err?.code, message: err?.message || null });
     },
     {
       enableHighAccuracy: true,
@@ -833,7 +833,7 @@ function reconcileWorld(state) {
   const clientIds = Object.keys(state.clients || {});
   const blockCount = (state.droppedBlocks || []).length;
 
-  setUIStatus(`Connected (${shortId(socket.id)})${lastGeoErrorCode ? ` | Location error (${lastGeoErrorCode})` : ""}`);
+  setUIStatus(`Connected (${shortId(socket.id)})`);
   setUICounts(clientIds.length, blockCount, myDeletedCount);
 
   // Players (pointers only; no cubes/spheres)
@@ -842,7 +842,7 @@ function reconcileWorld(state) {
 
     if (isNumber(c.lat) && isNumber(c.lon)) {
       const { x, z } = latLonToXZ(c.lat, c.lon);
-      ptr.position.set(x, DROPPED_CUBE_Y + PLAYER_POINTER_Y_OFFSET, z);
+      ptr.position.set(x, PLAYER_CUBE_Y, z);
       ptr.metadata = { ...(ptr.metadata || {}), lat: c.lat, lon: c.lon, kind: "playerPointer", socketId: id };
     }
 
@@ -862,12 +862,13 @@ function reconcileWorld(state) {
     }
   }
 
-  // Prefer the server-backed local marker; otherwise show the local fallback marker.
-  if (playerPointers[socket.id]) {
-    if (localFallbackPointer) localFallbackPointer.isVisible = false;
-  } else if (localFallbackPointer) {
-    localFallbackPointer.isVisible = true;
+  // Follow mode: translate the world so the local player stays centered under the camera.
+  if (followMe) {
+    const me = (socket.id && playerPointers[socket.id]) ? playerPointers[socket.id] : ensureLocalFallbackPointer();
+    worldRoot.position.x = -me.position.x;
+    worldRoot.position.z = -me.position.z;
   }
+
   updateLocalVisuals();
 
   // Dropped cubes (create/update)
@@ -933,7 +934,6 @@ socket.on("deleteResult", (r) => {
 
 socket.on("connect", () => {
   setUIStatus("Connected");
-  ensureLocalFallbackPointer();
   updateLocalVisuals();
   emitTelemetry("connect", { id: socket.id });
 });
@@ -956,10 +956,3 @@ engine.runRenderLoop(() => {
 });
 
 window.addEventListener("resize", () => engine.resize());
-
-
-if (!("geolocation" in navigator)) {
-  setUIStatus("Geolocation unavailable");
-  ensureLocalFallbackPointer();
-  updateLocalVisuals();
-}
