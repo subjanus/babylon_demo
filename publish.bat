@@ -1,3 +1,3 @@
 git add .                                         
-git commit -m "Gotdot version, testing chatgpt5.2"
+git commit -m "testing chatgpt5.4"
 git push
