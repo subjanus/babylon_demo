@@ -80,8 +80,9 @@ const YAW_ALPHA = 0.08;
 const YAW_SEND_MIN_MS = 120;
 const YAW_SEND_MIN_DELTA = 0.03;
 const GPS_ALPHA = 0.12;
-const SEND_MIN_MS = 350;
-const DEAD_BAND_M = 1.8;
+const SEND_MIN_MS = 250;
+const HEARTBEAT_MS = 1200;
+const DEAD_BAND_M = 0.35;
 const TELEMETRY_MIN_MS = 500;
 const SELECT_DELETE_RANGE_M = 8;
 const DROPPED_CUBE_Y = -1;
@@ -93,6 +94,7 @@ let anchorLon = 0;
 let anchorKey = "0.000000,0.000000";
 let rawLat = null, rawLon = null;
 let filtLat = null, filtLon = null;
+let liveRelX = null, liveRelZ = null;
 let lastSentRelX = null, lastSentRelZ = null, lastSentAt = 0;
 
 const playerPointers = {};
@@ -120,8 +122,9 @@ function latLonToRel(lat, lon, aLat = anchorLat, aLon = anchorLon) {
 }
 function relDist(a, b) { return Math.hypot((a.x || 0) - (b.x || 0), (a.z || 0) - (b.z || 0)); }
 function currentRel() {
-  const lat = isNumber(filtLat) ? filtLat : rawLat;
-  const lon = isNumber(filtLon) ? filtLon : rawLon;
+  if (isNumber(liveRelX) && isNumber(liveRelZ)) return { x: liveRelX, z: liveRelZ };
+  const lat = isNumber(rawLat) ? rawLat : filtLat;
+  const lon = isNumber(rawLon) ? rawLon : filtLon;
   if (!isNumber(lat) || !isNumber(lon)) return null;
   return latLonToRel(lat, lon);
 }
@@ -168,6 +171,11 @@ function applyAnchor(lat, lon) {
   anchorLat = n.lat; anchorLon = n.lon; anchorKey = n.key;
   if (anchorInput) anchorInput.text = formatAnchorText(anchorLat, anchorLon);
   if (anchorSummaryText) anchorSummaryText.text = `Anchor: ${anchorLat.toFixed(6)}, ${anchorLon.toFixed(6)}`;
+  liveRelX = null;
+  liveRelZ = null;
+  lastSentRelX = null;
+  lastSentRelZ = null;
+  lastSentAt = 0;
   saveAnchor();
   sendGpsNow();
 }
@@ -661,6 +669,10 @@ scene.onPointerObservable.add((pi) => {
 
 function onGeo(lat, lon, coords) {
   rawLat = lat; rawLon = lon;
+  const rawRel = latLonToRel(lat, lon);
+  liveRelX = rawRel.x;
+  liveRelZ = rawRel.z;
+
   if (Number.isFinite(coords?.heading)) {
     lastGeoHeadingRad = normalizeAngleRad(-BABYLON.Angle.FromDegrees(coords.heading).radians());
     if (!motionEnabled) {
@@ -668,24 +680,35 @@ function onGeo(lat, lon, coords) {
       camera.rotation.y = localYawRad;
     }
   }
+
   if (filtLat === null || filtLon === null) {
     filtLat = lat; filtLon = lon;
   } else {
     filtLat = filtLat + (lat - filtLat) * GPS_ALPHA;
     filtLon = filtLon + (lon - filtLon) * GPS_ALPHA;
   }
+
   emitTelemetry("gps", {
     accuracy: coords?.accuracy,
     heading: coords?.heading,
-    speed: coords?.speed
+    speed: coords?.speed,
+    relX: liveRelX,
+    relZ: liveRelZ
   });
   maybeSendGpsUpdate();
 }
 
-function sendGpsNow() {
+function sendGpsNow(force = false) {
   const rel = currentRel();
-  if (!rel || !socket.connected) return;
+  if (!rel || !socket.connected) return false;
+  const now = Date.now();
   socket.emit("gpsUpdate", { anchorLat, anchorLon, relX: rel.x, relY: 0, relZ: rel.z });
+  if (force || lastSentRelX === null || lastSentRelZ === null || Math.hypot(rel.x - lastSentRelX, rel.z - lastSentRelZ) >= 0.001) {
+    lastSentRelX = rel.x;
+    lastSentRelZ = rel.z;
+  }
+  lastSentAt = now;
+  return true;
 }
 
 function maybeSendGpsUpdate() {
@@ -693,12 +716,13 @@ function maybeSendGpsUpdate() {
   if (!rel) return;
   const now = Date.now();
   if (lastSentRelX === null || lastSentRelZ === null) {
-    lastSentRelX = rel.x; lastSentRelZ = rel.z; lastSentAt = now; sendGpsNow(); return;
+    sendGpsNow(true);
+    return;
   }
-  if (now - lastSentAt < SEND_MIN_MS) return;
   const moved = Math.hypot(rel.x - lastSentRelX, rel.z - lastSentRelZ);
-  if (moved < DEAD_BAND_M) return;
-  lastSentRelX = rel.x; lastSentRelZ = rel.z; lastSentAt = now; sendGpsNow();
+  const dueForHeartbeat = (now - lastSentAt) >= HEARTBEAT_MS;
+  const dueForMove = (now - lastSentAt) >= SEND_MIN_MS && moved >= DEAD_BAND_M;
+  if (dueForMove || dueForHeartbeat) sendGpsNow(dueForHeartbeat);
 }
 
 if ("geolocation" in navigator) {
@@ -853,7 +877,7 @@ socket.on("deleteResult", (r) => {
 socket.on("connect", () => {
   setStatus("Connected");
   emitTelemetry("connect", { id: socket.id });
-  sendGpsNow();
+  sendGpsNow(true);
 });
 
 socket.on("worldState", (state) => {
@@ -868,6 +892,7 @@ engine.runRenderLoop(() => {
   maybeSendOrientationUpdate();
   updateLocalHorizon();
   updateSelectionHUD();
+  maybeSendGpsUpdate();
   scene.render();
 });
 window.addEventListener("resize", () => engine.resize());
