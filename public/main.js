@@ -80,24 +80,22 @@ const YAW_ALPHA = 0.08;
 const YAW_SEND_MIN_MS = 120;
 const YAW_SEND_MIN_DELTA = 0.03;
 const GPS_ALPHA = 0.12;
-const SEND_MIN_MS = 250;
-const HEARTBEAT_MS = 1000;
-const DEAD_BAND_M = 0.2;
-const GPS_FORCE_POLL_MS = 1000;
+const SEND_MIN_MS = 350;
+const DEAD_BAND_M = 0.35;
 const TELEMETRY_MIN_MS = 500;
 const SELECT_DELETE_RANGE_M = 8;
 const DROPPED_CUBE_Y = -1;
 const PLAYER_POINTER_Y = 0.6;
 const ANCHOR_KEY = "fieldkit.anchor.v1";
+const SESSION_ORIGIN_KEY = "fieldkit.sessionOrigin.v1";
 
 let anchorLat = 0;
 let anchorLon = 0;
 let anchorKey = "0.000000,0.000000";
 let rawLat = null, rawLon = null;
 let filtLat = null, filtLon = null;
-let liveRelX = null, liveRelZ = null;
-let lastGpsAt = 0;
-let gpsSamples = 0;
+let sessionOriginLat = null, sessionOriginLon = null;
+let sessionOriginPending = false;
 let lastSentRelX = null, lastSentRelZ = null, lastSentAt = 0;
 
 const playerPointers = {};
@@ -125,11 +123,11 @@ function latLonToRel(lat, lon, aLat = anchorLat, aLon = anchorLon) {
 }
 function relDist(a, b) { return Math.hypot((a.x || 0) - (b.x || 0), (a.z || 0) - (b.z || 0)); }
 function currentRel() {
-  if (isNumber(liveRelX) && isNumber(liveRelZ)) return { x: liveRelX, z: liveRelZ };
   const lat = isNumber(rawLat) ? rawLat : filtLat;
   const lon = isNumber(rawLon) ? rawLon : filtLon;
   if (!isNumber(lat) || !isNumber(lon)) return null;
-  return latLonToRel(lat, lon);
+  if (!isNumber(sessionOriginLat) || !isNumber(sessionOriginLon)) return null;
+  return latLonToRel(lat, lon, sessionOriginLat, sessionOriginLon);
 }
 function setStatus(s) {
   if (statusEl) statusEl.textContent = s;
@@ -148,12 +146,27 @@ function setSelected(s, canDelete = false) {
 function saveAnchor() {
   localStorage.setItem(ANCHOR_KEY, JSON.stringify({ lat: anchorLat, lon: anchorLon }));
 }
+function saveSessionOrigin() {
+  if (isNumber(sessionOriginLat) && isNumber(sessionOriginLon)) {
+    localStorage.setItem(SESSION_ORIGIN_KEY, JSON.stringify({ lat: sessionOriginLat, lon: sessionOriginLon, anchorKey }));
+  } else {
+    localStorage.removeItem(SESSION_ORIGIN_KEY);
+  }
+}
 function loadAnchor() {
   try {
     const raw = JSON.parse(localStorage.getItem(ANCHOR_KEY) || "null");
     if (raw && Number.isFinite(Number(raw.lat)) && Number.isFinite(Number(raw.lon))) {
       const n = normAnchor(raw.lat, raw.lon);
       anchorLat = n.lat; anchorLon = n.lon; anchorKey = n.key;
+    }
+  } catch (_) {}
+  try {
+    const rawOrigin = JSON.parse(localStorage.getItem(SESSION_ORIGIN_KEY) || "null");
+    if (rawOrigin && rawOrigin.anchorKey === anchorKey && Number.isFinite(Number(rawOrigin.lat)) && Number.isFinite(Number(rawOrigin.lon))) {
+      sessionOriginLat = Number(rawOrigin.lat);
+      sessionOriginLon = Number(rawOrigin.lon);
+      sessionOriginPending = false;
     }
   } catch (_) {}
 }
@@ -169,16 +182,37 @@ function parseAnchorText(value) {
 function formatAnchorText(lat = anchorLat, lon = anchorLon) {
   return `${Number(lat).toFixed(6)},${Number(lon).toFixed(6)}`;
 }
+function updateAnchorSummary() {
+  if (!anchorSummaryText) return;
+  let suffix = " | Session origin: waiting";
+  if (isNumber(sessionOriginLat) && isNumber(sessionOriginLon)) suffix = " | Session origin: captured";
+  else if (sessionOriginPending) suffix = " | Session origin: awaiting GPS";
+  anchorSummaryText.text = `Anchor: ${anchorLat.toFixed(6)}, ${anchorLon.toFixed(6)}${suffix}`;
+}
+function calibrateSessionOrigin(lat = rawLat, lon = rawLon) {
+  if (!isNumber(lat) || !isNumber(lon)) return false;
+  sessionOriginLat = Number(lat);
+  sessionOriginLon = Number(lon);
+  sessionOriginPending = false;
+  lastSentRelX = null;
+  lastSentRelZ = null;
+  lastSentAt = 0;
+  saveSessionOrigin();
+  updateAnchorSummary();
+  return true;
+}
 function applyAnchor(lat, lon) {
   const n = normAnchor(lat, lon);
   anchorLat = n.lat; anchorLon = n.lon; anchorKey = n.key;
   if (anchorInput) anchorInput.text = formatAnchorText(anchorLat, anchorLon);
-  if (anchorSummaryText) anchorSummaryText.text = `Anchor: ${anchorLat.toFixed(6)}, ${anchorLon.toFixed(6)}`;
-  liveRelX = null;
-  liveRelZ = null;
-  gpsSamples = 0;
+  sessionOriginLat = null;
+  sessionOriginLon = null;
+  sessionOriginPending = true;
+  if (isNumber(rawLat) && isNumber(rawLon)) calibrateSessionOrigin(rawLat, rawLon);
+  updateAnchorSummary();
   saveAnchor();
-  sendGpsNow(true);
+  saveSessionOrigin();
+  sendGpsNow();
 }
 
 function getCameraYawRad() {
@@ -204,8 +238,10 @@ function maybeSendOrientationUpdate() {
 }
 function updateLocalHorizon() {
   const yaw = getCameraYawRad();
+  const cameraRoll = camera.rotation?.z || 0;
   horizonRoot.position.set(camera.position.x, camera.position.y - 2.15, camera.position.z);
-  horizonRoot.rotation.set(0, -yaw, 0);
+  // Keep the helper horizon level on screen even when the phone rolls.
+  horizonRoot.rotation.set(0, -yaw, -cameraRoll);
 }
 
 function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg = null) {
@@ -228,11 +264,9 @@ function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg =
   localPitchRad = BABYLON.Scalar.Clamp(beta - Math.PI / 2, -1.35, 1.35);
   localRollRad = BABYLON.Scalar.Clamp(gamma, -1.35, 1.35);
 
-  // Option A stability path: use yaw + pitch only for the camera.
-  // Keep roll out of the camera transform to avoid heading-dependent tilt/skew.
   camera.rotation.x = -localPitchRad;
   camera.rotation.y = localYawRad;
-  camera.rotation.z = 0;
+  camera.rotation.z = -localRollRad * 0.35;
 }
 
 function handleDeviceOrientation(ev) {
@@ -474,7 +508,7 @@ function createDrawerUI() {
   uiDeleteBtn.isEnabled = false;
   uiDeleteBtn.alpha = 0.5;
 
-  const help = new BABYLON.GUI.TextBlock("helpText", "Privacy mode: only anchor + relative meters are transmitted. Raw GPS stays on the client.");
+  const help = new BABYLON.GUI.TextBlock("helpText", "Privacy mode: anchor defines the shared world root. Your phone stores a private session GPS origin and only transmits movement in relative meters.");
   help.height = "70px";
   help.textWrapping = true;
   help.fontSize = 11;
@@ -490,7 +524,8 @@ function createDrawerUI() {
 
 const ui = createDrawerUI();
 loadAnchor();
-applyAnchor(anchorLat, anchorLon);
+if (anchorInput) anchorInput.text = formatAnchorText(anchorLat, anchorLon);
+updateAnchorSummary();
 
 function isPointerOverDrawerUI(evt) {
   if (!evt) return false;
@@ -670,6 +705,9 @@ scene.onPointerObservable.add((pi) => {
 
 function onGeo(lat, lon, coords) {
   rawLat = lat; rawLon = lon;
+  if (sessionOriginPending && !isNumber(sessionOriginLat) && !isNumber(sessionOriginLon)) {
+    calibrateSessionOrigin(lat, lon);
+  }
   if (Number.isFinite(coords?.heading)) {
     lastGeoHeadingRad = normalizeAngleRad(-BABYLON.Angle.FromDegrees(coords.heading).radians());
     if (!motionEnabled) {
@@ -686,7 +724,9 @@ function onGeo(lat, lon, coords) {
   emitTelemetry("gps", {
     accuracy: coords?.accuracy,
     heading: coords?.heading,
-    speed: coords?.speed
+    speed: coords?.speed,
+    sessionOrigin: isNumber(sessionOriginLat) && isNumber(sessionOriginLon) ? { lat: sessionOriginLat, lon: sessionOriginLon } : null,
+    sessionOriginPending
   });
   maybeSendGpsUpdate();
 }
@@ -699,14 +739,18 @@ function sendGpsNow() {
 
 function maybeSendGpsUpdate() {
   const rel = currentRel();
-  if (!rel) return;
+  if (!rel) {
+    if (sessionOriginPending) updateAnchorSummary();
+    return;
+  }
   const now = Date.now();
   if (lastSentRelX === null || lastSentRelZ === null) {
     lastSentRelX = rel.x; lastSentRelZ = rel.z; lastSentAt = now; sendGpsNow(); return;
   }
   if (now - lastSentAt < SEND_MIN_MS) return;
   const moved = Math.hypot(rel.x - lastSentRelX, rel.z - lastSentRelZ);
-  if (moved < DEAD_BAND_M) return;
+  const heartbeat = now - lastSentAt >= 1200;
+  if (!heartbeat && moved < DEAD_BAND_M) return;
   lastSentRelX = rel.x; lastSentRelZ = rel.z; lastSentAt = now; sendGpsNow();
 }
 
@@ -718,20 +762,8 @@ if ("geolocation" in navigator) {
       if (isNumber(lat) && isNumber(lon)) onGeo(lat, lon, pos.coords);
     },
     () => {},
-    { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+    { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 }
   );
-
-  setInterval(() => {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const lat = pos.coords.latitude;
-        const lon = pos.coords.longitude;
-        if (isNumber(lat) && isNumber(lon)) onGeo(lat, lon, pos.coords);
-      },
-      () => {},
-      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
-    );
-  }, GPS_FORCE_POLL_MS);
 }
 
 function updateLocalPlayerPointer() {
@@ -872,7 +904,7 @@ socket.on("deleteResult", (r) => {
 });
 
 socket.on("connect", () => {
-  setStatus("Connected");
+  setStatus(sessionOriginPending ? "Connected | Waiting for GPS calibration" : "Connected");
   emitTelemetry("connect", { id: socket.id });
   sendGpsNow();
 });
