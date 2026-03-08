@@ -789,6 +789,21 @@ function reconcileWorld(state) {
   processProximityTriggers();
 }
 
+function updateLocalFollow() {
+  if (!followMe) return;
+  const meLocal = currentRel();
+  if (meLocal && isNumber(meLocal.x) && isNumber(meLocal.z)) {
+    worldRoot.position.x = -meLocal.x;
+    worldRoot.position.z = -meLocal.z;
+    return;
+  }
+  const me = lastWorldState?.clients?.[socket.id];
+  if (me && me.anchorKey === anchorKey && isNumber(me.relX) && isNumber(me.relZ)) {
+    worldRoot.position.x = -me.relX;
+    worldRoot.position.z = -me.relZ;
+  }
+}
+
 function processProximityTriggers() {
   const me = currentRel();
   if (!me || !lastWorldState) return;
@@ -848,6 +863,7 @@ socket.on("worldState", (state) => {
 
 engine.runRenderLoop(() => {
   applyHeadingStabilization();
+  updateLocalFollow();
   updateLocalPlayerPointer();
   maybeSendOrientationUpdate();
   updateLocalHorizon();
