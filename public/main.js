@@ -195,10 +195,8 @@ function maybeSendOrientationUpdate() {
 }
 function updateLocalHorizon() {
   const yaw = getCameraYawRad();
-  const cameraRoll = camera.rotation?.z || 0;
   horizonRoot.position.set(camera.position.x, camera.position.y - 2.15, camera.position.z);
-  // Keep the helper horizon level on screen even when the phone rolls.
-  horizonRoot.rotation.set(0, -yaw, -cameraRoll);
+  horizonRoot.rotation.set(0, -yaw, 0);
 }
 
 function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg = null) {
@@ -221,9 +219,11 @@ function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg =
   localPitchRad = BABYLON.Scalar.Clamp(beta - Math.PI / 2, -1.35, 1.35);
   localRollRad = BABYLON.Scalar.Clamp(gamma, -1.35, 1.35);
 
+  // Option A stability path: use yaw + pitch only for the camera.
+  // Keep roll out of the camera transform to avoid heading-dependent tilt/skew.
   camera.rotation.x = -localPitchRad;
   camera.rotation.y = localYawRad;
-  camera.rotation.z = -localRollRad * 0.35;
+  camera.rotation.z = 0;
 }
 
 function handleDeviceOrientation(ev) {
