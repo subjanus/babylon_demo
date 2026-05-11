@@ -56,9 +56,9 @@
 
     function renderCounts() {
       const users = lastState?.clients ? Object.keys(lastState.clients).length : 0;
-      const cubes = lastState?.droppedBlocks ? lastState.droppedBlocks.length : 0;
-      const circles = lastState?.circles ? lastState.circles.length : 0;
-      countsEl.textContent = `Users: ${users} | Cubes: ${cubes} | Circles: ${circles} | MyDeleted: ${myDeleted}`;
+      const objects = Array.isArray(lastState?.worldObjects) ? lastState.worldObjects.length : 0;
+      const cubes = Array.isArray(lastState?.droppedBlocks) ? lastState.droppedBlocks.length : 0;
+      countsEl.textContent = `Users: ${users} | Objects: ${objects} | Cubes: ${cubes} | MyDeleted: ${myDeleted}`;
     }
 
     socket.on('connect', () => {
@@ -87,8 +87,8 @@
     }
 
     document.getElementById('btnTelemetry').addEventListener('click', refreshTelemetry);
-    document.getElementById('btnSpawn').addEventListener('click', () => socket.emit('spawnCircles', { count: 60, radius: 80 }));
-    document.getElementById('btnClear').addEventListener('click', () => socket.emit('clearCircles'));
+    document.getElementById('btnSpawn').addEventListener('click', () => { window.location.href = '/circles'; });
+    document.getElementById('btnClear').addEventListener('click', () => { window.location.href = '/cleanup'; });
 
     refreshTelemetry();
   </script>

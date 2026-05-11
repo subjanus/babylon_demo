@@ -11,6 +11,9 @@ const io = new Server(server, { path: "/socket.io" });
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
 app.use(express.static(PUBLIC_DIR));
 app.get("/", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
+app.get("/debug", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "debug.html")));
+app.get("/circles", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "circles.html")));
+app.get("/cleanup", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "cleanup.html")));
 
 const COLORS = ["#00A3FF", "#FFCC00", "#34D399", "#F472B6", "#F59E0B", "#22D3EE", "#A78BFA"];
 let nextColorIdx = 0;
@@ -122,7 +125,8 @@ function droppedBlocksView() {
       relY: o.position.y,
       relZ: o.position.z,
       lat: o.anchorLat,
-      lon: o.anchorLon
+      lon: o.anchorLon,
+      color: o.visual?.color || "#ffffff"
     }));
 }
 
