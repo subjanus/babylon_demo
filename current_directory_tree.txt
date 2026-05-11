@@ -2,9 +2,11 @@
 ├── current_directory_tree.txt
 ├── demo client project.code-workspace
 ├── last_update_to_project_chatgpt
+├── MANIFEST.html
 ├── package.json
 ├── public
 │   ├── circles.html
+│   ├── cleanup.html
 │   ├── debug.html
 │   ├── geo_PATCH_SNIPPET.js
 │   ├── geo.js
@@ -16,6 +18,8 @@
 │   └── requestPermissions.js
 ├── publish.bat
 └── server
+    ├── circle-auth.txt
+    ├── cleanup-auth.txt
     └── index.js
 
-3 directories, 16 files
+3 directories, 20 files
