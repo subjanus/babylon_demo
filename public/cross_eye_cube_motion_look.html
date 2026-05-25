@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Cross-eye 3D Shape Field - Head Pivot Stereo</title>
+  <title>Cross-eye 3D Shape Field - VR Off-Axis Stereo</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <style>
     html, body {
@@ -70,10 +70,18 @@
   <div id="tinyStatus">loading</div>
 
   <script>
-    const EYE_SEPARATION = 0.24;
     const WORLD_RADIUS = 7.5;
-    // The head/neck turning axis is the shared pivot at world origin.
-    // Each eye sits slightly outside that axis, then orbits with head rotation.
+
+    // VR-style stereo setup:
+    // IPD = interpupillary distance. World units here behave like meters.
+    // This is intentionally less exaggerated than the earlier demo.
+    const EYE_SEPARATION = 0.064;
+
+    // Projection convergence distance. Objects near this distance should fuse more comfortably.
+    // We are not toeing-in cameras; we are shifting the projection frustum like VR runtimes do.
+    const CONVERGENCE_DISTANCE = WORLD_RADIUS;
+
+    // Shared head/neck pivot.
     const HEAD_PIVOT = new BABYLON.Vector3(0, 0, 0);
 
     const rightCanvas = document.getElementById("rightEyeCanvas");
@@ -83,6 +91,36 @@
 
     const rightEngine = new BABYLON.Engine(rightCanvas, true);
     const leftEngine = new BABYLON.Engine(leftCanvas, true);
+
+
+    if (!BABYLON.Matrix.PerspectiveOffCenterLH) {
+      BABYLON.Matrix.PerspectiveOffCenterLH = function(left, right, bottom, top, near, far) {
+        const m = new BABYLON.Matrix();
+        const te = m.m;
+
+        te[0] = 2 * near / (right - left);
+        te[1] = 0;
+        te[2] = 0;
+        te[3] = 0;
+
+        te[4] = 0;
+        te[5] = 2 * near / (top - bottom);
+        te[6] = 0;
+        te[7] = 0;
+
+        te[8] = (right + left) / (right - left);
+        te[9] = (top + bottom) / (top - bottom);
+        te[10] = far / (far - near);
+        te[11] = 1;
+
+        te[12] = 0;
+        te[13] = 0;
+        te[14] = -near * far / (far - near);
+        te[15] = 0;
+
+        return m;
+      };
+    }
 
     const look = {
       enabled: false,
@@ -118,6 +156,48 @@
       if (screen.orientation && typeof screen.orientation.angle === "number") return screen.orientation.angle;
       if (typeof window.orientation === "number") return window.orientation;
       return 0;
+    }
+
+    function makeHeadQuaternion() {
+      // VR-style: one shared head orientation, then each eye inherits it.
+      return BABYLON.Quaternion.RotationYawPitchRoll(
+        look.yaw,
+        look.pitch,
+        0
+      );
+    }
+
+    function setOffAxisProjection(camera, canvas, eyeOffsetX) {
+      const near = camera.minZ || 0.01;
+      const far = camera.maxZ || 1000;
+      const fovY = BABYLON.Tools.ToRadians(74);
+      const aspect = Math.max(0.1, canvas.clientWidth / Math.max(1, canvas.clientHeight));
+
+      const top = near * Math.tan(fovY / 2);
+      const bottom = -top;
+      const halfWidth = top * aspect;
+
+      // Off-axis frustum shift:
+      // The eye is physically offset from the head center, but the projection is shifted
+      // so the view remains parallel and comfortable instead of toeing-in.
+      const shift = -eyeOffsetX * near / CONVERGENCE_DISTANCE;
+
+      const left = -halfWidth + shift;
+      const right = halfWidth + shift;
+
+      const proj = BABYLON.Matrix.PerspectiveOffCenterLH(
+        left,
+        right,
+        bottom,
+        top,
+        near,
+        far
+      );
+
+      // Avoid relying on Babylon's default centered projection.
+      camera.getProjectionMatrix = function() {
+        return proj;
+      };
     }
 
     function setTinyStatus(msg) {
@@ -198,6 +278,8 @@
       camera.minZ = 0.01;
       camera.maxZ = 1000;
       camera.fov = BABYLON.Tools.ToRadians(74);
+      camera.rotationQuaternion = BABYLON.Quaternion.Identity();
+      scene.activeCamera = camera;
 
       const hemi = new BABYLON.HemisphericLight(name + "Hemi", new BABYLON.Vector3(0, 1, 0), scene);
       hemi.intensity = 0.88;
@@ -255,11 +337,22 @@
       ringYZ.material = ringMat;
 
       scene.onBeforeRenderObservable.add(() => {
-        camera.position.set(eyeOffsetX, 0, 0);
-        camera.rotation.x = look.pitch;
-        camera.rotation.y = look.yaw;
-        // Roll locked off: prevents the view from tipping/rotating left or right.
-        camera.rotation.z = 0;
+        const headQuat = makeHeadQuaternion();
+
+        // Eye position is a local IPD offset, rotated by the same head pose.
+        const localEyeOffset = new BABYLON.Vector3(eyeOffsetX, 0, 0);
+        const rotatedEyeOffset = BABYLON.Vector3.TransformCoordinates(
+          localEyeOffset,
+          BABYLON.Matrix.FromQuaternion(headQuat)
+        );
+
+        camera.position.copyFrom(HEAD_PIVOT.add(rotatedEyeOffset));
+
+        // Both eyes point in the exact same direction. No toe-in.
+        // This is the big VR trick: parallel cameras + off-axis projection.
+        camera.rotationQuaternion.copyFrom(headQuat);
+
+        setOffAxisProjection(camera, canvas, eyeOffsetX);
       });
 
       return scene;
@@ -374,7 +467,7 @@
     });
 
     // Prove the graphics loaded even before sensor data arrives.
-    setTinyStatus("graphics loaded - head pivot stereo - tap enable");
+    setTinyStatus("graphics loaded - VR off-axis stereo - tap enable");
   </script>
 </body>
 </html>
