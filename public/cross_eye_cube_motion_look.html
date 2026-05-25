@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Cross-eye 3D Shape Field - Safe VR Parallel Stereo</title>
+  <title>Cross-eye 3D Shape Field - Human Eye Pivot Safe</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <style>
     html, body {
@@ -51,7 +51,7 @@
       right: 8px;
       bottom: 6px;
       z-index: 5;
-      color: rgba(203, 213, 225, 0.65);
+      color: rgba(203, 213, 225, 0.70);
       font-size: 10px;
       pointer-events: none;
       text-shadow: 0 1px 2px black;
@@ -70,15 +70,15 @@
   <div id="tinyStatus">loading</div>
 
   <script>
+    // Safe version: no projection overrides, no quaternions, no GUI library.
+    // Human-ish stereo model:
+    // - both eyes share yaw/pitch
+    // - roll stays locked
+    // - each eye is offset from the head center
+    // - eye offset rotates around the head pivot when yaw changes
+
     const WORLD_RADIUS = 7.5;
-
-    // Safe VR-style stereo:
-    // Real-ish IPD was too subtle for this browser cross-eye test, so this uses a mildly
-    // exaggerated separation while keeping both cameras parallel.
-    const EYE_SEPARATION = 0.16;
-
-    // Shared head/neck pivot at the center of the shape field.
-    const HEAD_PIVOT = new BABYLON.Vector3(0, 0, 0);
+    const EYE_SEPARATION = 0.18; // exaggerated enough for browser cross-eye testing
 
     const rightCanvas = document.getElementById("rightEyeCanvas");
     const leftCanvas = document.getElementById("leftEyeCanvas");
@@ -92,17 +92,19 @@
       enabled: false,
       yaw: 0,
       pitch: 0,
-      roll: 0,
       zeroYaw: null,
       zeroPitch: null,
-      orientationCount: 0,
-      lastOrientationAt: 0,
-      screenAngle: 0,
       alpha: null,
       beta: null,
       gamma: null,
-      compass: null
+      compass: null,
+      screenAngle: 0,
+      orientationCount: 0
     };
+
+    function setTinyStatus(msg) {
+      tinyStatus.textContent = msg;
+    }
 
     function clamp(v, lo, hi) {
       return Math.max(lo, Math.min(hi, v));
@@ -122,20 +124,6 @@
       if (screen.orientation && typeof screen.orientation.angle === "number") return screen.orientation.angle;
       if (typeof window.orientation === "number") return window.orientation;
       return 0;
-    }
-
-    function makeHeadQuaternion() {
-      // One shared head orientation for both eyes.
-      // Roll is intentionally zero to keep the horizon stable.
-      return BABYLON.Quaternion.RotationYawPitchRoll(
-        look.yaw,
-        look.pitch,
-        0
-      );
-    }
-
-    function setTinyStatus(msg) {
-      tinyStatus.textContent = msg;
     }
 
     function makeMat(scene, name, hex, emissivePower = 0.18, alpha = 1) {
@@ -171,7 +159,6 @@
     }
 
     function addBillboardText(scene, name, text, x, y, z, hex) {
-      // DynamicTexture is part of core Babylon. No Babylon GUI dependency.
       const plane = BABYLON.MeshBuilder.CreatePlane(name, { width: 2.7, height: 0.7 }, scene);
       plane.position.set(x, y, z);
       plane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
@@ -196,7 +183,6 @@
       mat.disableLighting = true;
       mat.specularColor = BABYLON.Color3.Black();
       plane.material = mat;
-
       return plane;
     }
 
@@ -212,44 +198,27 @@
       camera.minZ = 0.01;
       camera.maxZ = 1000;
       camera.fov = BABYLON.Tools.ToRadians(74);
-      camera.rotationQuaternion = BABYLON.Quaternion.Identity();
       scene.activeCamera = camera;
 
       const hemi = new BABYLON.HemisphericLight(name + "Hemi", new BABYLON.Vector3(0, 1, 0), scene);
-      hemi.intensity = 0.88;
+      hemi.intensity = 0.9;
 
       const centerLight = new BABYLON.PointLight(name + "CenterLight", new BABYLON.Vector3(0, 0, 0), scene);
       centerLight.intensity = 0.8;
       centerLight.range = 24;
 
-      // Small near-field proof marker: confirms each eye pane is rendering independently.
-      // It sits just forward of the camera center, but is different per eye scene.
-      const proof = BABYLON.MeshBuilder.CreateSphere(name + "StereoProofDot", { diameter: 0.10, segments: 12 }, scene);
-      proof.position.set(eyeOffsetX * 2.5, -0.35, 1.25);
-      proof.material = makeMat(
-        scene,
-        name + "StereoProofDotMat",
-        eyeOffsetX > 0 ? "#ff5a5a" : "#5aa7ff",
-        0.75,
-        0.85
-      );
-
-
-      // A small center ghost so you can recognize the camera origin if you look down/around.
       const ghost = BABYLON.MeshBuilder.CreateSphere(name + "OriginGhost", { diameter: 0.25, segments: 16 }, scene);
       ghost.material = makeMat(scene, name + "GhostMat", "#ffffff", 0.5, 0.38);
 
-      const animated = [];
+      // Main six test shapes.
+      addShape(scene, "box",      name + "FrontCube",    0,    0,     WORLD_RADIUS, "#008cff");
+      addShape(scene, "sphere",   name + "BackSphere",   0,    0,    -WORLD_RADIUS, "#ffb000");
+      addShape(scene, "cylinder", name + "LeftColumn",  -WORLD_RADIUS, 0, 0, "#22c55e");
+      addShape(scene, "cone",     name + "RightCone",    WORLD_RADIUS, 0, 0, "#f43f5e");
+      addShape(scene, "torus",    name + "TopRing",      0,    WORLD_RADIUS * 0.72, 0, "#a855f7");
+      addShape(scene, "box",      name + "BottomCube",   0,   -WORLD_RADIUS * 0.72, 0, "#14b8a6");
 
-      // Main direction test shapes.
-      animated.push(addShape(scene, "box",      name + "FrontCube",    0,    0,     WORLD_RADIUS, "#008cff"));
-      animated.push(addShape(scene, "sphere",   name + "BackSphere",   0,    0,    -WORLD_RADIUS, "#ffb000"));
-      animated.push(addShape(scene, "cylinder", name + "LeftColumn",  -WORLD_RADIUS, 0, 0, "#22c55e"));
-      animated.push(addShape(scene, "cone",     name + "RightCone",    WORLD_RADIUS, 0, 0, "#f43f5e"));
-      animated.push(addShape(scene, "torus",    name + "TopRing",      0,    WORLD_RADIUS * 0.72, 0, "#a855f7"));
-      animated.push(addShape(scene, "box",      name + "BottomCube",   0,   -WORLD_RADIUS * 0.72, 0, "#14b8a6"));
-
-      // Labels, made without Babylon GUI.
+      // Labels.
       addBillboardText(scene, name + "LabelFront", "FRONT", 0, 1.45, WORLD_RADIUS, "#dbeafe");
       addBillboardText(scene, name + "LabelBack", "BACK", 0, 1.45, -WORLD_RADIUS, "#fde68a");
       addBillboardText(scene, name + "LabelLeft", "LEFT", -WORLD_RADIUS, 1.45, 0, "#bbf7d0");
@@ -257,7 +226,7 @@
       addBillboardText(scene, name + "LabelAbove", "ABOVE", 0, WORLD_RADIUS * 0.72 + 1.45, 0, "#e9d5ff");
       addBillboardText(scene, name + "LabelBelow", "BELOW", 0, -WORLD_RADIUS * 0.72 - 1.45, 0, "#ccfbf1");
 
-      // Orientation cage: three rings around the camera.
+      // Ring cage.
       const ringMat = makeMat(scene, name + "RingMat", "#64748b", 0.25, 0.35);
 
       const ringXZ = BABYLON.MeshBuilder.CreateTorus(name + "RingXZ", {
@@ -283,21 +252,36 @@
       ringYZ.rotation.y = Math.PI / 2;
       ringYZ.material = ringMat;
 
+      // Stereo proof dot. It appears slightly different in each pane.
+      const proof = BABYLON.MeshBuilder.CreateSphere(name + "StereoProofDot", {
+        diameter: 0.13,
+        segments: 12
+      }, scene);
+      proof.position.set(eyeOffsetX * 2.6, -0.38, 1.3);
+      proof.material = makeMat(
+        scene,
+        name + "StereoProofDotMat",
+        eyeOffsetX > 0 ? "#ff5a5a" : "#5aa7ff",
+        0.75,
+        0.9
+      );
+
       scene.onBeforeRenderObservable.add(() => {
-        const headQuat = makeHeadQuaternion();
+        // Human-eye pivot, safe Euler version.
+        // Rotate the eye offset around the head center by yaw only.
+        // Pitch changes view direction, but does not try to move the eye in space.
+        const c = Math.cos(look.yaw);
+        const s = Math.sin(look.yaw);
 
-        // Eye is offset from the center of the head, then carried with the head rotation.
-        // This simulates eyes mounted on a head rather than two fixed world cameras.
-        const localEyeOffset = new BABYLON.Vector3(eyeOffsetX, 0, 0);
-        const rotatedEyeOffset = BABYLON.Vector3.TransformCoordinates(
-          localEyeOffset,
-          BABYLON.Matrix.FromQuaternion(headQuat)
-        );
+        const x = eyeOffsetX * c;
+        const z = -eyeOffsetX * s;
 
-        camera.position.copyFrom(HEAD_PIVOT.add(rotatedEyeOffset));
+        camera.position.set(x, 0, z);
 
-        // Both eyes stay parallel: same exact orientation, no toe-in.
-        camera.rotationQuaternion.copyFrom(headQuat);
+        // Both eyes look in the same direction. No roll, no toe-in.
+        camera.rotation.x = look.pitch;
+        camera.rotation.y = look.yaw;
+        camera.rotation.z = 0;
       });
 
       return scene;
@@ -318,8 +302,6 @@
 
     function applyOrientation(ev) {
       look.orientationCount += 1;
-      look.lastOrientationAt = Date.now();
-
       look.alpha = Number.isFinite(ev.alpha) ? ev.alpha : null;
       look.beta = Number.isFinite(ev.beta) ? ev.beta : null;
       look.gamma = Number.isFinite(ev.gamma) ? ev.gamma : null;
@@ -341,16 +323,12 @@
       const landscape = absScreen === 90 || absScreen === 270;
 
       let pitchRaw;
-
       if (landscape) {
-        // Phone turned sideways: gamma is usually the clearest "look up / down" axis.
         pitchRaw = -degToRad(look.gamma || 0);
       } else {
-        // Portrait fallback.
         pitchRaw = degToRad(look.beta || 0) - Math.PI / 2;
       }
 
-      // Clamp pitch to a comfortable look range.
       pitchRaw = clamp(pitchRaw, -1.20, 1.20);
 
       if (look.zeroYaw === null) look.zeroYaw = yawRaw;
@@ -358,8 +336,6 @@
 
       look.yaw = normalizeRad(yawRaw - look.zeroYaw);
       look.pitch = clamp((pitchRaw - look.zeroPitch) * 1.15, -1.20, 1.20);
-      // Keep roll stable even if the phone tilts left/right.
-      look.roll = 0;
 
       setTinyStatus(
         "events " + look.orientationCount +
@@ -402,17 +378,14 @@
       if (ok) {
         enableBtn.textContent = "Recenter";
         setTinyStatus("motion enabled");
-        setTimeout(() => {
-          enableBtn.style.opacity = "0.35";
-        }, 1000);
+        setTimeout(() => { enableBtn.style.opacity = "0.35"; }, 1000);
       } else {
         enableBtn.textContent = "Motion blocked";
         setTinyStatus("motion unavailable or blocked");
       }
     });
 
-    // Prove the graphics loaded even before sensor data arrives.
-    setTinyStatus("graphics loaded - safe parallel stereo - tap enable");
+    setTinyStatus("graphics loaded - safe human-eye pivot - tap enable");
   </script>
 </body>
 </html>
