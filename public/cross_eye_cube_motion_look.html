@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Cross-eye 3D Shape Field - Main Shapes Only</title>
+  <title>Cross-eye 3D Shape Field - Static No Forward Line</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <style>
     html, body {
@@ -251,26 +251,12 @@
       ringYZ.rotation.y = Math.PI / 2;
       ringYZ.material = ringMat;
 
-      // Bright forward line.
-      const forwardLine = BABYLON.MeshBuilder.CreateBox(name + "ForwardLine", {
-        width: 0.045,
-        height: 0.045,
-        depth: WORLD_RADIUS
-      }, scene);
-      forwardLine.position.z = WORLD_RADIUS / 2;
-      forwardLine.material = makeMat(scene, name + "ForwardLineMat", "#38bdf8", 0.7, 0.8);
-
       scene.onBeforeRenderObservable.add(() => {
         camera.position.set(eyeOffsetX, 0, 0);
         camera.rotation.x = look.pitch;
         camera.rotation.y = look.yaw;
         // Roll locked off: prevents the view from tipping/rotating left or right.
         camera.rotation.z = 0;
-
-        const dt = engine.getDeltaTime();
-        for (const mesh of animated) {
-          mesh.rotation.y += dt * 0.00008;
-        }
       });
 
       return scene;
@@ -388,7 +374,7 @@
     });
 
     // Prove the graphics loaded even before sensor data arrives.
-    setTinyStatus("graphics loaded - main shapes only - tap enable");
+    setTinyStatus("graphics loaded - static shapes - tap enable");
   </script>
 </body>
 </html>
