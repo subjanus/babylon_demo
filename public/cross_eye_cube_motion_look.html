@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Cross-eye 3D Shape Field - Clean</title>
+  <title>Cross-eye 3D Shape Field - Roll Locked</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <style>
     html, body {
@@ -270,7 +270,8 @@
         camera.position.set(eyeOffsetX, 0, 0);
         camera.rotation.x = look.pitch;
         camera.rotation.y = look.yaw;
-        camera.rotation.z = look.roll * 0.16;
+        // Roll locked off: prevents the view from tipping/rotating left or right.
+        camera.rotation.z = 0;
 
         const dt = engine.getDeltaTime();
         for (const mesh of animated) {
@@ -339,7 +340,8 @@
 
       look.yaw = normalizeRad(yawRaw - look.zeroYaw);
       look.pitch = clamp(pitchRaw - look.zeroPitch, -1.45, 1.45);
-      look.roll = rollRaw;
+      // Keep roll stable even if the phone tilts left/right.
+      look.roll = 0;
 
       setTinyStatus(
         "events " + look.orientationCount +
@@ -392,7 +394,7 @@
     });
 
     // Prove the graphics loaded even before sensor data arrives.
-    setTinyStatus("graphics loaded - tap enable");
+    setTinyStatus("graphics loaded - roll locked - tap enable");
   </script>
 </body>
 </html>
