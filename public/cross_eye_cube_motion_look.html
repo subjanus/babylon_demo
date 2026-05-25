@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Cross-eye 3D Shape Field - Yaw Plus Pitch</title>
+  <title>Cross-eye 3D Shape Field - Head Pivot Stereo</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <style>
     html, body {
@@ -72,6 +72,9 @@
   <script>
     const EYE_SEPARATION = 0.24;
     const WORLD_RADIUS = 7.5;
+    // The head/neck turning axis is the shared pivot at world origin.
+    // Each eye sits slightly outside that axis, then orbits with head rotation.
+    const HEAD_PIVOT = new BABYLON.Vector3(0, 0, 0);
 
     const rightCanvas = document.getElementById("rightEyeCanvas");
     const leftCanvas = document.getElementById("leftEyeCanvas");
@@ -371,7 +374,7 @@
     });
 
     // Prove the graphics loaded even before sensor data arrives.
-    setTinyStatus("graphics loaded - yaw + pitch - tap enable");
+    setTinyStatus("graphics loaded - head pivot stereo - tap enable");
   </script>
 </body>
 </html>
