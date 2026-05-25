@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Cross-eye 3D Shape Field - Static No Forward Line</title>
+  <title>Cross-eye 3D Shape Field - Yaw Plus Pitch</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <style>
     html, body {
@@ -300,26 +300,23 @@
       const landscape = absScreen === 90 || absScreen === 270;
 
       let pitchRaw;
-      let rollRaw;
 
       if (landscape) {
-        // Sideways phone: gamma tends to become the useful up/down look axis.
+        // Phone turned sideways: gamma is usually the clearest "look up / down" axis.
         pitchRaw = -degToRad(look.gamma || 0);
-        rollRaw = degToRad((look.beta || 0) - 90);
       } else {
-        // Portrait or desktop fallback.
+        // Portrait fallback.
         pitchRaw = degToRad(look.beta || 0) - Math.PI / 2;
-        rollRaw = degToRad(look.gamma || 0);
       }
 
-      pitchRaw = clamp(pitchRaw, -1.45, 1.45);
-      rollRaw = clamp(rollRaw, -1.2, 1.2);
+      // Clamp pitch to a comfortable look range.
+      pitchRaw = clamp(pitchRaw, -1.20, 1.20);
 
       if (look.zeroYaw === null) look.zeroYaw = yawRaw;
       if (look.zeroPitch === null) look.zeroPitch = pitchRaw;
 
       look.yaw = normalizeRad(yawRaw - look.zeroYaw);
-      look.pitch = clamp(pitchRaw - look.zeroPitch, -1.45, 1.45);
+      look.pitch = clamp((pitchRaw - look.zeroPitch) * 1.15, -1.20, 1.20);
       // Keep roll stable even if the phone tilts left/right.
       look.roll = 0;
 
@@ -374,7 +371,7 @@
     });
 
     // Prove the graphics loaded even before sensor data arrives.
-    setTinyStatus("graphics loaded - static shapes - tap enable");
+    setTinyStatus("graphics loaded - yaw + pitch - tap enable");
   </script>
 </body>
 </html>
