@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Cross-eye Babylon Cube + Motion Look</title>
+  <title>Cross-eye 3D Sensor Space</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <style>
     html, body {
@@ -21,7 +21,6 @@
       display: flex;
       width: 100vw;
       height: 100vh;
-      overflow: hidden;
       background: #05070a;
     }
 
@@ -31,20 +30,6 @@
       display: block;
       outline: none;
       touch-action: none;
-    }
-
-    #status {
-      position: fixed;
-      left: 10px;
-      bottom: 10px;
-      right: 10px;
-      z-index: 5;
-      font-size: 12px;
-      line-height: 1.35;
-      color: #cbd5e1;
-      opacity: 0.9;
-      pointer-events: none;
-      text-shadow: 0 1px 2px #000;
     }
 
     #enable {
@@ -62,13 +47,25 @@
       cursor: pointer;
     }
 
-    #enable:active {
-      transform: translateX(-50%) translateY(1px);
+    #diag {
+      position: fixed;
+      left: 10px;
+      bottom: 10px;
+      z-index: 5;
+      max-width: calc(100vw - 20px);
+      padding: 8px 10px;
+      border: 1px solid rgba(51,65,85,0.8);
+      border-radius: 10px;
+      background: rgba(15,23,42,0.70);
+      color: #cbd5e1;
+      font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+      pointer-events: none;
     }
   </style>
 </head>
 <body>
-  <button id="enable">Enable motion look</button>
+  <button id="enable">Enable motion / recenter</button>
 
   <div id="stereoWrap">
     <!-- Cross-eye order: right-eye view on the left, left-eye view on the right -->
@@ -76,36 +73,48 @@
     <canvas id="leftEyeCanvas"></canvas>
   </div>
 
-  <div id="status">
-    Starting. Tap “Enable motion look.” Cross your eyes until the cube merges in the middle.
-  </div>
+  <div id="diag">Starting 3D sensor space...</div>
 
   <script>
-    const EYE_SEPARATION = 0.22;
-    const CUBE_Z = 6.0;
-    const CAMERA_HEIGHT = 1.6;
-
-    const statusEl = document.getElementById("status");
-    const enableBtn = document.getElementById("enable");
+    const EYE_SEPARATION = 0.24;
+    const CAMERA_HEIGHT = 0;
+    const WORLD_RADIUS = 8;
 
     const rightCanvas = document.getElementById("rightEyeCanvas");
     const leftCanvas = document.getElementById("leftEyeCanvas");
+    const enableBtn = document.getElementById("enable");
+    const diag = document.getElementById("diag");
 
-    const rightEngine = new BABYLON.Engine(rightCanvas, true, { preserveDrawingBuffer: true, stencil: true });
-    const leftEngine = new BABYLON.Engine(leftCanvas, true, { preserveDrawingBuffer: true, stencil: true });
+    const rightEngine = new BABYLON.Engine(rightCanvas, true);
+    const leftEngine = new BABYLON.Engine(leftCanvas, true);
 
-    const sharedLook = {
+    const look = {
+      enabled: false,
       yaw: 0,
       pitch: 0,
       roll: 0,
       zeroYaw: null,
       zeroPitch: null,
-      enabled: false,
-      lastSource: "none"
+      alpha: null,
+      beta: null,
+      gamma: null,
+      compass: null,
+      orientationCount: 0,
+      lastOrientationAt: 0,
+      screenAngle: 0,
+      error: ""
     };
 
     function clamp(v, lo, hi) {
       return Math.max(lo, Math.min(hi, v));
+    }
+
+    function degToRad(d) {
+      return (Number(d) || 0) * Math.PI / 180;
+    }
+
+    function radToDeg(r) {
+      return r * 180 / Math.PI;
     }
 
     function normalizeRad(a) {
@@ -114,78 +123,171 @@
       return a;
     }
 
-    function degToRad(d) {
-      return (Number(d) || 0) * Math.PI / 180;
+    function fmt(n) {
+      return Number.isFinite(n) ? n.toFixed(1) : "null";
     }
 
-    function makeScene(engine, canvas, eyeOffsetX, eyeName) {
+    function getScreenAngleDeg() {
+      if (screen.orientation && typeof screen.orientation.angle === "number") {
+        return screen.orientation.angle;
+      }
+      if (typeof window.orientation === "number") {
+        return window.orientation;
+      }
+      return 0;
+    }
+
+    function diagnosticText() {
+      const secure = window.isSecureContext ? "yes" : "no";
+      const hasOrientation = typeof DeviceOrientationEvent !== "undefined" ? "yes" : "no";
+      const permissionApi =
+        (typeof DeviceOrientationEvent !== "undefined" &&
+         typeof DeviceOrientationEvent.requestPermission === "function") ? "yes" : "no";
+      const age = look.lastOrientationAt ? `${Date.now() - look.lastOrientationAt}ms ago` : "never";
+
+      return [
+        "Landscape phone mode. Camera is at center of a 3D shape field.",
+        "Cross-eye: right eye is left pane, left eye is right pane.",
+        `secure context: ${secure} | DeviceOrientationEvent: ${hasOrientation} | permission API: ${permissionApi}`,
+        `enabled: ${look.enabled ? "yes" : "no"} | events: ${look.orientationCount} (${age}) | screen angle: ${look.screenAngle}`,
+        `alpha: ${fmt(look.alpha)} | beta: ${fmt(look.beta)} | gamma: ${fmt(look.gamma)} | compass: ${fmt(look.compass)}`,
+        `camera yaw: ${fmt(radToDeg(look.yaw))}° | pitch: ${fmt(radToDeg(look.pitch))}° | roll: ${fmt(radToDeg(look.roll))}°`,
+        look.error ? `error: ${look.error}` : ""
+      ].filter(Boolean).join("\n");
+    }
+
+    function refreshDiag() {
+      diag.textContent = diagnosticText();
+    }
+    setInterval(refreshDiag, 250);
+
+    function createMaterial(scene, name, hex, emissive = 0.12, alpha = 1) {
+      const mat = new BABYLON.StandardMaterial(name, scene);
+      const c = BABYLON.Color3.FromHexString(hex);
+      mat.diffuseColor = c;
+      mat.emissiveColor = c.scale(emissive);
+      mat.specularColor = BABYLON.Color3.Black();
+      mat.alpha = alpha;
+      return mat;
+    }
+
+    function addLabel(scene, parent, text, yOffset = 1.0) {
+      const plane = BABYLON.MeshBuilder.CreatePlane(parent.name + "_label", { width: 2.6, height: 0.55 }, scene);
+      plane.parent = parent;
+      plane.position.y = yOffset;
+      plane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+
+      const tex = BABYLON.GUI.AdvancedDynamicTexture.CreateForMesh(plane, 512, 128, false);
+      const tb = new BABYLON.GUI.TextBlock(parent.name + "_text", text);
+      tb.color = "#e2e8f0";
+      tb.fontSize = 46;
+      tb.outlineWidth = 3;
+      tb.outlineColor = "#000000";
+      tex.addControl(tb);
+    }
+
+    function addShape(scene, kind, name, pos, hex, label) {
+      let mesh;
+      if (kind === "box") {
+        mesh = BABYLON.MeshBuilder.CreateBox(name, { size: 1.2 }, scene);
+      } else if (kind === "sphere") {
+        mesh = BABYLON.MeshBuilder.CreateSphere(name, { diameter: 1.35, segments: 32 }, scene);
+      } else if (kind === "cylinder") {
+        mesh = BABYLON.MeshBuilder.CreateCylinder(name, { diameter: 1.25, height: 1.6, tessellation: 32 }, scene);
+      } else if (kind === "torus") {
+        mesh = BABYLON.MeshBuilder.CreateTorus(name, { diameter: 1.5, thickness: 0.22, tessellation: 48 }, scene);
+      } else if (kind === "cone") {
+        mesh = BABYLON.MeshBuilder.CreateCylinder(name, { diameterTop: 0, diameterBottom: 1.4, height: 1.8, tessellation: 32 }, scene);
+      } else {
+        mesh = BABYLON.MeshBuilder.CreateBox(name, { size: 1.2 }, scene);
+      }
+
+      mesh.position.set(pos.x, pos.y, pos.z);
+      mesh.material = createMaterial(scene, name + "_mat", hex, 0.18);
+      addLabel(scene, mesh, label);
+      return mesh;
+    }
+
+    function makeScene(engine, canvas, eyeOffsetX, name) {
       const scene = new BABYLON.Scene(engine);
       scene.clearColor = new BABYLON.Color4(0.02, 0.03, 0.05, 1);
 
       const camera = new BABYLON.FreeCamera(
-        eyeName + "Camera",
+        name + "Camera",
         new BABYLON.Vector3(eyeOffsetX, CAMERA_HEIGHT, 0),
         scene
       );
       camera.minZ = 0.01;
       camera.maxZ = 1000;
-      camera.fov = BABYLON.Tools.ToRadians(70);
-      camera.rotation.set(0, 0, 0);
+      camera.fov = BABYLON.Tools.ToRadians(72);
 
-      const hemi = new BABYLON.HemisphericLight(
-        eyeName + "Hemi",
-        new BABYLON.Vector3(0, 1, 0),
-        scene
-      );
-      hemi.intensity = 0.75;
+      const hemi = new BABYLON.HemisphericLight(name + "Hemi", new BABYLON.Vector3(0, 1, 0), scene);
+      hemi.intensity = 0.85;
 
-      const key = new BABYLON.DirectionalLight(
-        eyeName + "Key",
-        new BABYLON.Vector3(-0.5, -1.0, -0.5),
-        scene
-      );
-      key.intensity = 0.7;
+      const point = new BABYLON.PointLight(name + "CenterLight", new BABYLON.Vector3(0, 0, 0), scene);
+      point.intensity = 0.65;
+      point.range = 22;
 
-      const cube = BABYLON.MeshBuilder.CreateBox(eyeName + "Cube", { size: 1.45 }, scene);
-      cube.position.set(0, CAMERA_HEIGHT, CUBE_Z);
+      // Transparent center reference: the camera sits here.
+      const center = BABYLON.MeshBuilder.CreateSphere(name + "CenterGhost", { diameter: 0.32, segments: 16 }, scene);
+      center.position.set(0, 0, 0);
+      center.material = createMaterial(scene, name + "CenterMat", "#ffffff", 0.5, 0.45);
 
-      const cubeMat = new BABYLON.StandardMaterial(eyeName + "CubeMat", scene);
-      cubeMat.diffuseColor = new BABYLON.Color3(0.0, 0.45, 1.0);
-      cubeMat.emissiveColor = new BABYLON.Color3(0.0, 0.08, 0.20);
-      cubeMat.specularColor = new BABYLON.Color3(0.3, 0.45, 0.8);
-      cube.material = cubeMat;
+      // Cardinal/depth/up/down shapes around the camera.
+      const shapes = [
+        ["box",      "frontCube",    { x:  0, y:  0, z:  WORLD_RADIUS }, "#008cff", "FRONT"],
+        ["sphere",   "backSphere",   { x:  0, y:  0, z: -WORLD_RADIUS }, "#ffb000", "BACK"],
+        ["cylinder", "leftColumn",   { x: -WORLD_RADIUS, y: 0, z:  0 }, "#22c55e", "LEFT"],
+        ["cone",     "rightCone",    { x:  WORLD_RADIUS, y: 0, z:  0 }, "#f43f5e", "RIGHT"],
+        ["torus",    "topRing",      { x:  0, y:  WORLD_RADIUS * 0.75, z: 0 }, "#a855f7", "ABOVE"],
+        ["box",      "bottomCube",   { x:  0, y: -WORLD_RADIUS * 0.75, z: 0 }, "#14b8a6", "BELOW"],
 
-      // A few quiet depth hints, still keeping the test simple.
-      const floor = BABYLON.MeshBuilder.CreateGround(eyeName + "Ground", { width: 20, height: 20 }, scene);
-      floor.position.z = CUBE_Z + 2;
-      floor.position.y = 0;
-      const floorMat = new BABYLON.StandardMaterial(eyeName + "FloorMat", scene);
-      floorMat.diffuseColor = new BABYLON.Color3(0.05, 0.07, 0.10);
-      floorMat.specularColor = BABYLON.Color3.Black();
-      floor.material = floorMat;
+        ["sphere",   "frontHigh",    { x:  3.5, y:  3.2, z:  6.0 }, "#60a5fa", "front high"],
+        ["cylinder", "frontLow",     { x: -3.5, y: -3.0, z:  6.0 }, "#2dd4bf", "front low"],
+        ["torus",    "backHigh",     { x: -3.5, y:  3.0, z: -6.0 }, "#f472b6", "back high"],
+        ["cone",     "backLow",      { x:  3.5, y: -3.0, z: -6.0 }, "#f97316", "back low"]
+      ];
 
-      for (let i = -4; i <= 4; i++) {
-        const marker = BABYLON.MeshBuilder.CreateBox(eyeName + "Marker" + i, {
-          width: 0.04,
-          height: 0.04,
-          depth: 20
-        }, scene);
-        marker.position.set(i, 0.025, 8);
-        const m = new BABYLON.StandardMaterial(eyeName + "MarkerMat" + i, scene);
-        m.diffuseColor = new BABYLON.Color3(0.16, 0.22, 0.30);
-        marker.material = m;
+      const animated = [];
+      for (const s of shapes) {
+        animated.push(addShape(scene, s[0], name + "_" + s[1], s[2], s[3], s[4]));
       }
+
+      // World cage/rings to make 3D orientation obvious.
+      const ringMat = createMaterial(scene, name + "RingMat", "#64748b", 0.25, 0.38);
+      const ringXZ = BABYLON.MeshBuilder.CreateTorus(name + "RingXZ", { diameter: WORLD_RADIUS * 2, thickness: 0.035, tessellation: 128 }, scene);
+      ringXZ.material = ringMat;
+      ringXZ.rotation.x = Math.PI / 2;
+
+      const ringXY = BABYLON.MeshBuilder.CreateTorus(name + "RingXY", { diameter: WORLD_RADIUS * 2, thickness: 0.035, tessellation: 128 }, scene);
+      ringXY.material = ringMat;
+
+      const ringYZ = BABYLON.MeshBuilder.CreateTorus(name + "RingYZ", { diameter: WORLD_RADIUS * 2, thickness: 0.035, tessellation: 128 }, scene);
+      ringYZ.material = ringMat;
+      ringYZ.rotation.y = Math.PI / 2;
+
+      // Forward direction line, so the initial view is obvious.
+      const axisMat = createMaterial(scene, name + "AxisMat", "#38bdf8", 0.5, 0.75);
+      const forwardLine = BABYLON.MeshBuilder.CreateBox(name + "ForwardLine", {
+        width: 0.035,
+        height: 0.035,
+        depth: WORLD_RADIUS
+      }, scene);
+      forwardLine.position.z = WORLD_RADIUS / 2;
+      forwardLine.material = axisMat;
 
       scene.onBeforeRenderObservable.add(() => {
         camera.position.set(eyeOffsetX, CAMERA_HEIGHT, 0);
 
         // Babylon FreeCamera convention: x=pitch, y=yaw, z=roll.
-        camera.rotation.x = sharedLook.pitch;
-        camera.rotation.y = sharedLook.yaw;
-        camera.rotation.z = sharedLook.roll * 0.20;
+        camera.rotation.x = look.pitch;
+        camera.rotation.y = look.yaw;
+        camera.rotation.z = look.roll * 0.18;
 
-        cube.rotation.y += engine.getDeltaTime() * 0.00035;
-        cube.rotation.x += engine.getDeltaTime() * 0.00015;
+        const dt = engine.getDeltaTime();
+        for (const mesh of animated) {
+          mesh.rotation.y += dt * 0.00012;
+        }
       });
 
       return scene;
@@ -194,117 +296,112 @@
     const rightScene = makeScene(rightEngine, rightCanvas, +EYE_SEPARATION / 2, "right");
     const leftScene = makeScene(leftEngine, leftCanvas, -EYE_SEPARATION / 2, "left");
 
-    function renderBoth() {
+    rightEngine.runRenderLoop(() => {
       rightScene.render();
       leftScene.render();
-    }
-
-    rightEngine.runRenderLoop(renderBoth);
-    leftEngine.runRenderLoop(() => { /* rendered by right loop to keep both eyes synced */ });
+    });
 
     window.addEventListener("resize", () => {
       rightEngine.resize();
       leftEngine.resize();
     });
 
-    function updateStatus(extra) {
-      statusEl.textContent =
-        `${sharedLook.enabled ? "Motion enabled" : "Motion not enabled"} | ` +
-        `source: ${sharedLook.lastSource} | ` +
-        `yaw ${(sharedLook.yaw * 180 / Math.PI).toFixed(1)}° | ` +
-        `pitch ${(sharedLook.pitch * 180 / Math.PI).toFixed(1)}°` +
-        (extra ? ` | ${extra}` : "");
-    }
+    function applyOrientation(ev) {
+      look.orientationCount += 1;
+      look.lastOrientationAt = Date.now();
 
-    function applyOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg) {
-      const screenAngleDeg =
-        (screen.orientation && typeof screen.orientation.angle === "number")
-          ? screen.orientation.angle
-          : (typeof window.orientation === "number" ? window.orientation : 0);
+      look.alpha = Number.isFinite(ev.alpha) ? ev.alpha : null;
+      look.beta = Number.isFinite(ev.beta) ? ev.beta : null;
+      look.gamma = Number.isFinite(ev.gamma) ? ev.gamma : null;
+      look.compass = Number.isFinite(ev.webkitCompassHeading) ? ev.webkitCompassHeading : null;
+      look.screenAngle = getScreenAngleDeg();
 
-      let yawRaw;
+      if (!look.enabled) return;
 
-      // iPhone Safari often gives this; it is degrees clockwise from north.
-      if (Number.isFinite(compassHeadingDeg)) {
-        yawRaw = -degToRad(compassHeadingDeg) + degToRad(screenAngleDeg);
-        sharedLook.lastSource = "webkitCompassHeading";
-      } else if (Number.isFinite(alphaDeg)) {
-        yawRaw = degToRad(alphaDeg) + degToRad(screenAngleDeg);
-        sharedLook.lastSource = "deviceorientation alpha";
-      } else {
-        return;
+      // Yaw: prefer iPhone compass heading when present.
+      let yawRaw = null;
+      if (look.compass !== null) {
+        yawRaw = -degToRad(look.compass) + degToRad(look.screenAngle);
+      } else if (look.alpha !== null) {
+        yawRaw = degToRad(look.alpha) + degToRad(look.screenAngle);
       }
 
-      // beta: front/back tilt. gamma: left/right roll.
-      // This is intentionally simple: good enough for look left/right/up/down.
-      const pitchRaw = clamp(degToRad(betaDeg || 0) - Math.PI / 2, -1.25, 1.25);
-      const rollRaw = clamp(degToRad(gammaDeg || 0), -1.25, 1.25);
+      if (yawRaw === null) return;
 
-      if (sharedLook.zeroYaw === null) sharedLook.zeroYaw = yawRaw;
-      if (sharedLook.zeroPitch === null) sharedLook.zeroPitch = pitchRaw;
+      // Landscape-friendly pitch:
+      // In portrait, beta usually tracks up/down tilt.
+      // In landscape, gamma often becomes the more useful up/down axis.
+      let pitchRaw;
+      const absScreen = Math.abs(Number(look.screenAngle) || 0);
+      const landscape = absScreen === 90 || absScreen === 270;
 
-      sharedLook.yaw = normalizeRad(yawRaw - sharedLook.zeroYaw);
-      sharedLook.pitch = clamp(pitchRaw - sharedLook.zeroPitch, -1.25, 1.25);
-      sharedLook.roll = rollRaw;
+      if (landscape) {
+        // For phone on its side, gamma tends to describe nose-up/nose-down motion.
+        pitchRaw = -degToRad(look.gamma || 0);
+      } else {
+        // Portrait-ish fallback.
+        pitchRaw = degToRad(look.beta || 0) - Math.PI / 2;
+      }
 
-      updateStatus();
+      // Roll is the other tilt axis, softened visually.
+      const rollRaw = landscape
+        ? degToRad((look.beta || 0) - 90)
+        : degToRad(look.gamma || 0);
+
+      pitchRaw = clamp(pitchRaw, -1.45, 1.45);
+
+      if (look.zeroYaw === null) look.zeroYaw = yawRaw;
+      if (look.zeroPitch === null) look.zeroPitch = pitchRaw;
+
+      look.yaw = normalizeRad(yawRaw - look.zeroYaw);
+      look.pitch = clamp(pitchRaw - look.zeroPitch, -1.45, 1.45);
+      look.roll = clamp(rollRaw, -1.2, 1.2);
+
+      refreshDiag();
     }
 
-    function onDeviceOrientation(ev) {
-      if (!sharedLook.enabled) return;
-      const compass = Number.isFinite(ev.webkitCompassHeading) ? ev.webkitCompassHeading : null;
-      applyOrientation(ev.alpha, ev.beta, ev.gamma, compass);
-    }
+    window.addEventListener("deviceorientation", applyOrientation, true);
+    window.addEventListener("deviceorientationabsolute", applyOrientation, true);
 
-    window.addEventListener("deviceorientation", onDeviceOrientation, true);
-    window.addEventListener("deviceorientationabsolute", onDeviceOrientation, true);
-
-    async function requestMotionPermissions() {
+    async function requestPermissionIfNeeded() {
       try {
         if (typeof DeviceMotionEvent !== "undefined" &&
             typeof DeviceMotionEvent.requestPermission === "function") {
-          const result = await DeviceMotionEvent.requestPermission();
-          if (result !== "granted") return false;
+          const r = await DeviceMotionEvent.requestPermission();
+          if (r !== "granted") return false;
         }
-      } catch (e) {
-        updateStatus("DeviceMotion permission failed: " + e.message);
-        return false;
-      }
 
-      try {
         if (typeof DeviceOrientationEvent !== "undefined" &&
             typeof DeviceOrientationEvent.requestPermission === "function") {
-          const result = await DeviceOrientationEvent.requestPermission();
-          if (result !== "granted") return false;
+          const r = await DeviceOrientationEvent.requestPermission();
+          if (r !== "granted") return false;
         }
+
+        return true;
       } catch (e) {
-        updateStatus("DeviceOrientation permission failed: " + e.message);
+        look.error = e && e.message ? e.message : String(e);
         return false;
       }
-
-      return true;
     }
 
     enableBtn.addEventListener("click", async () => {
-      const ok = await requestMotionPermissions();
+      look.error = "";
+      look.zeroYaw = null;
+      look.zeroPitch = null;
 
-      // On desktop Chrome there may be no permission API, but orientation events may still not exist.
-      // We still enter enabled mode so the status makes sense and the page does not hang.
-      sharedLook.enabled = ok;
-      sharedLook.zeroYaw = null;
-      sharedLook.zeroPitch = null;
+      const ok = await requestPermissionIfNeeded();
+      look.enabled = ok;
 
       if (ok) {
-        enableBtn.textContent = "Motion look enabled";
-        setTimeout(() => { enableBtn.style.display = "none"; }, 900);
-        updateStatus("move/tilt the device");
+        enableBtn.textContent = "Recenter";
       } else {
-        enableBtn.textContent = "Motion blocked or unavailable";
-        updateStatus("sensor permission denied/unavailable");
+        enableBtn.textContent = "Motion unavailable or blocked";
       }
+
+      refreshDiag();
     });
 
-    updateStatus("ready");
+    refreshDiag();
   </script>
 </body>
 </html>
