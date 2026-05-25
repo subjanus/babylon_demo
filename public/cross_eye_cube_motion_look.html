@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Cross-eye Babylon Cube + Motion Look</title>
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #05070a;
+      color: #dbeafe;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    #stereoWrap {
+      display: flex;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: #05070a;
+    }
+
+    canvas {
+      width: 50vw;
+      height: 100vh;
+      display: block;
+      outline: none;
+      touch-action: none;
+    }
+
+    #status {
+      position: fixed;
+      left: 10px;
+      bottom: 10px;
+      right: 10px;
+      z-index: 5;
+      font-size: 12px;
+      line-height: 1.35;
+      color: #cbd5e1;
+      opacity: 0.9;
+      pointer-events: none;
+      text-shadow: 0 1px 2px #000;
+    }
+
+    #enable {
+      position: fixed;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      border: 1px solid #334155;
+      border-radius: 999px;
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 10px 16px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    #enable:active {
+      transform: translateX(-50%) translateY(1px);
+    }
+  </style>
+</head>
+<body>
+  <button id="enable">Enable motion look</button>
+
+  <div id="stereoWrap">
+    <!-- Cross-eye order: right-eye view on the left, left-eye view on the right -->
+    <canvas id="rightEyeCanvas"></canvas>
+    <canvas id="leftEyeCanvas"></canvas>
+  </div>
+
+  <div id="status">
+    Starting. Tap “Enable motion look.” Cross your eyes until the cube merges in the middle.
+  </div>
+
+  <script>
+    const EYE_SEPARATION = 0.22;
+    const CUBE_Z = 6.0;
+    const CAMERA_HEIGHT = 1.6;
+
+    const statusEl = document.getElementById("status");
+    const enableBtn = document.getElementById("enable");
+
+    const rightCanvas = document.getElementById("rightEyeCanvas");
+    const leftCanvas = document.getElementById("leftEyeCanvas");
+
+    const rightEngine = new BABYLON.Engine(rightCanvas, true, { preserveDrawingBuffer: true, stencil: true });
+    const leftEngine = new BABYLON.Engine(leftCanvas, true, { preserveDrawingBuffer: true, stencil: true });
+
+    const sharedLook = {
+      yaw: 0,
+      pitch: 0,
+      roll: 0,
+      zeroYaw: null,
+      zeroPitch: null,
+      enabled: false,
+      lastSource: "none"
+    };
+
+    function clamp(v, lo, hi) {
+      return Math.max(lo, Math.min(hi, v));
+    }
+
+    function normalizeRad(a) {
+      while (a > Math.PI) a -= Math.PI * 2;
+      while (a < -Math.PI) a += Math.PI * 2;
+      return a;
+    }
+
+    function degToRad(d) {
+      return (Number(d) || 0) * Math.PI / 180;
+    }
+
+    function makeScene(engine, canvas, eyeOffsetX, eyeName) {
+      const scene = new BABYLON.Scene(engine);
+      scene.clearColor = new BABYLON.Color4(0.02, 0.03, 0.05, 1);
+
+      const camera = new BABYLON.FreeCamera(
+        eyeName + "Camera",
+        new BABYLON.Vector3(eyeOffsetX, CAMERA_HEIGHT, 0),
+        scene
+      );
+      camera.minZ = 0.01;
+      camera.maxZ = 1000;
+      camera.fov = BABYLON.Tools.ToRadians(70);
+      camera.rotation.set(0, 0, 0);
+
+      const hemi = new BABYLON.HemisphericLight(
+        eyeName + "Hemi",
+        new BABYLON.Vector3(0, 1, 0),
+        scene
+      );
+      hemi.intensity = 0.75;
+
+      const key = new BABYLON.DirectionalLight(
+        eyeName + "Key",
+        new BABYLON.Vector3(-0.5, -1.0, -0.5),
+        scene
+      );
+      key.intensity = 0.7;
+
+      const cube = BABYLON.MeshBuilder.CreateBox(eyeName + "Cube", { size: 1.45 }, scene);
+      cube.position.set(0, CAMERA_HEIGHT, CUBE_Z);
+
+      const cubeMat = new BABYLON.StandardMaterial(eyeName + "CubeMat", scene);
+      cubeMat.diffuseColor = new BABYLON.Color3(0.0, 0.45, 1.0);
+      cubeMat.emissiveColor = new BABYLON.Color3(0.0, 0.08, 0.20);
+      cubeMat.specularColor = new BABYLON.Color3(0.3, 0.45, 0.8);
+      cube.material = cubeMat;
+
+      // A few quiet depth hints, still keeping the test simple.
+      const floor = BABYLON.MeshBuilder.CreateGround(eyeName + "Ground", { width: 20, height: 20 }, scene);
+      floor.position.z = CUBE_Z + 2;
+      floor.position.y = 0;
+      const floorMat = new BABYLON.StandardMaterial(eyeName + "FloorMat", scene);
+      floorMat.diffuseColor = new BABYLON.Color3(0.05, 0.07, 0.10);
+      floorMat.specularColor = BABYLON.Color3.Black();
+      floor.material = floorMat;
+
+      for (let i = -4; i <= 4; i++) {
+        const marker = BABYLON.MeshBuilder.CreateBox(eyeName + "Marker" + i, {
+          width: 0.04,
+          height: 0.04,
+          depth: 20
+        }, scene);
+        marker.position.set(i, 0.025, 8);
+        const m = new BABYLON.StandardMaterial(eyeName + "MarkerMat" + i, scene);
+        m.diffuseColor = new BABYLON.Color3(0.16, 0.22, 0.30);
+        marker.material = m;
+      }
+
+      scene.onBeforeRenderObservable.add(() => {
+        camera.position.set(eyeOffsetX, CAMERA_HEIGHT, 0);
+
+        // Babylon FreeCamera convention: x=pitch, y=yaw, z=roll.
+        camera.rotation.x = sharedLook.pitch;
+        camera.rotation.y = sharedLook.yaw;
+        camera.rotation.z = sharedLook.roll * 0.20;
+
+        cube.rotation.y += engine.getDeltaTime() * 0.00035;
+        cube.rotation.x += engine.getDeltaTime() * 0.00015;
+      });
+
+      return scene;
+    }
+
+    const rightScene = makeScene(rightEngine, rightCanvas, +EYE_SEPARATION / 2, "right");
+    const leftScene = makeScene(leftEngine, leftCanvas, -EYE_SEPARATION / 2, "left");
+
+    function renderBoth() {
+      rightScene.render();
+      leftScene.render();
+    }
+
+    rightEngine.runRenderLoop(renderBoth);
+    leftEngine.runRenderLoop(() => { /* rendered by right loop to keep both eyes synced */ });
+
+    window.addEventListener("resize", () => {
+      rightEngine.resize();
+      leftEngine.resize();
+    });
+
+    function updateStatus(extra) {
+      statusEl.textContent =
+        `${sharedLook.enabled ? "Motion enabled" : "Motion not enabled"} | ` +
+        `source: ${sharedLook.lastSource} | ` +
+        `yaw ${(sharedLook.yaw * 180 / Math.PI).toFixed(1)}° | ` +
+        `pitch ${(sharedLook.pitch * 180 / Math.PI).toFixed(1)}°` +
+        (extra ? ` | ${extra}` : "");
+    }
+
+    function applyOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg) {
+      const screenAngleDeg =
+        (screen.orientation && typeof screen.orientation.angle === "number")
+          ? screen.orientation.angle
+          : (typeof window.orientation === "number" ? window.orientation : 0);
+
+      let yawRaw;
+
+      // iPhone Safari often gives this; it is degrees clockwise from north.
+      if (Number.isFinite(compassHeadingDeg)) {
+        yawRaw = -degToRad(compassHeadingDeg) + degToRad(screenAngleDeg);
+        sharedLook.lastSource = "webkitCompassHeading";
+      } else if (Number.isFinite(alphaDeg)) {
+        yawRaw = degToRad(alphaDeg) + degToRad(screenAngleDeg);
+        sharedLook.lastSource = "deviceorientation alpha";
+      } else {
+        return;
+      }
+
+      // beta: front/back tilt. gamma: left/right roll.
+      // This is intentionally simple: good enough for look left/right/up/down.
+      const pitchRaw = clamp(degToRad(betaDeg || 0) - Math.PI / 2, -1.25, 1.25);
+      const rollRaw = clamp(degToRad(gammaDeg || 0), -1.25, 1.25);
+
+      if (sharedLook.zeroYaw === null) sharedLook.zeroYaw = yawRaw;
+      if (sharedLook.zeroPitch === null) sharedLook.zeroPitch = pitchRaw;
+
+      sharedLook.yaw = normalizeRad(yawRaw - sharedLook.zeroYaw);
+      sharedLook.pitch = clamp(pitchRaw - sharedLook.zeroPitch, -1.25, 1.25);
+      sharedLook.roll = rollRaw;
+
+      updateStatus();
+    }
+
+    function onDeviceOrientation(ev) {
+      if (!sharedLook.enabled) return;
+      const compass = Number.isFinite(ev.webkitCompassHeading) ? ev.webkitCompassHeading : null;
+      applyOrientation(ev.alpha, ev.beta, ev.gamma, compass);
+    }
+
+    window.addEventListener("deviceorientation", onDeviceOrientation, true);
+    window.addEventListener("deviceorientationabsolute", onDeviceOrientation, true);
+
+    async function requestMotionPermissions() {
+      try {
+        if (typeof DeviceMotionEvent !== "undefined" &&
+            typeof DeviceMotionEvent.requestPermission === "function") {
+          const result = await DeviceMotionEvent.requestPermission();
+          if (result !== "granted") return false;
+        }
+      } catch (e) {
+        updateStatus("DeviceMotion permission failed: " + e.message);
+        return false;
+      }
+
+      try {
+        if (typeof DeviceOrientationEvent !== "undefined" &&
+            typeof DeviceOrientationEvent.requestPermission === "function") {
+          const result = await DeviceOrientationEvent.requestPermission();
+          if (result !== "granted") return false;
+        }
+      } catch (e) {
+        updateStatus("DeviceOrientation permission failed: " + e.message);
+        return false;
+      }
+
+      return true;
+    }
+
+    enableBtn.addEventListener("click", async () => {
+      const ok = await requestMotionPermissions();
+
+      // On desktop Chrome there may be no permission API, but orientation events may still not exist.
+      // We still enter enabled mode so the status makes sense and the page does not hang.
+      sharedLook.enabled = ok;
+      sharedLook.zeroYaw = null;
+      sharedLook.zeroPitch = null;
+
+      if (ok) {
+        enableBtn.textContent = "Motion look enabled";
+        setTimeout(() => { enableBtn.style.display = "none"; }, 900);
+        updateStatus("move/tilt the device");
+      } else {
+        enableBtn.textContent = "Motion blocked or unavailable";
+        updateStatus("sensor permission denied/unavailable");
+      }
+    });
+
+    updateStatus("ready");
+  </script>
+</body>
+</html>
