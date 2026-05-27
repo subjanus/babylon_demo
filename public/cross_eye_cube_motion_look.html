@@ -3,206 +3,447 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>iPhone Motion Sensor Proof</title>
+  <title>Cross-eye 3D Shape Field - Compass Gravity Fixed</title>
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <style>
     html, body {
       margin: 0;
       padding: 0;
+      width: 100%;
       height: 100%;
+      overflow: hidden;
       background: #05070a;
-      color: #e2e8f0;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-    .wrap {
-      padding: 16px;
-      max-width: 760px;
-      margin: 0 auto;
+
+    #stereoWrap {
+      display: flex;
+      width: 100vw;
+      height: 100vh;
+      background: #05070a;
     }
-    button {
-      width: 100%;
-      border: 1px solid #334155;
-      border-radius: 14px;
-      background: #0f172a;
+
+    canvas {
+      width: 50vw;
+      height: 100vh;
+      display: block;
+      outline: none;
+      touch-action: none;
+    }
+
+    #enable {
+      position: fixed;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      border: 1px solid rgba(148, 163, 184, 0.55);
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.72);
       color: #e2e8f0;
-      padding: 14px;
-      font-size: 16px;
-      margin: 8px 0;
-    }
-    pre {
-      white-space: pre-wrap;
-      background: #020617;
-      border: 1px solid #1e293b;
-      border-radius: 14px;
-      padding: 12px;
+      padding: 8px 13px;
       font-size: 13px;
-      line-height: 1.35;
-      min-height: 320px;
+      cursor: pointer;
     }
-    .muted {
-      color: #94a3b8;
-      font-size: 13px;
-      line-height: 1.35;
+
+    #tinyStatus {
+      position: fixed;
+      right: 8px;
+      bottom: 6px;
+      z-index: 5;
+      color: rgba(203, 213, 225, 0.72);
+      font-size: 10px;
+      pointer-events: none;
+      text-shadow: 0 1px 2px black;
+      white-space: pre;
+      text-align: right;
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h2>iPhone Motion Sensor Proof</h2>
-    <p class="muted">
-      This page does no Babylon rendering. It only checks whether the browser is actually sending
-      deviceorientation and devicemotion events after a tap.
-    </p>
+  <button id="enable">Enable motion / recenter</button>
 
-    <button id="btn">Enable sensors</button>
-    <button id="reset">Reset counters</button>
-
-    <pre id="out">Starting...</pre>
+  <div id="stereoWrap">
+    <!-- Cross-eye order: right-eye view on the left, left-eye view on the right -->
+    <canvas id="rightEyeCanvas"></canvas>
+    <canvas id="leftEyeCanvas"></canvas>
   </div>
 
-  <script>
-    const out = document.getElementById("out");
-    const btn = document.getElementById("btn");
-    const reset = document.getElementById("reset");
+  <div id="tinyStatus">loading</div>
 
-    const state = {
-      secure: window.isSecureContext,
-      userAgent: navigator.userAgent,
-      permissionMotion: "not requested",
-      permissionOrientation: "not requested",
-      orientationEvents: 0,
-      motionEvents: 0,
-      lastOrientationAt: null,
-      lastMotionAt: null,
+  <script>
+    /*
+      Compass + Gravity fixed version.
+
+      Sensor proof showed:
+      - orientation events work
+      - motion events work
+      - webkitCompassHeading is stable
+      - beta is parked near -180 and gamma near -90 in your sideways/upright posture
+
+      So this version avoids Euler pitch entirely:
+      - yaw comes from webkitCompassHeading when available, alpha fallback
+      - pitch comes from accelerationIncludingGravity
+      - gamma ignored
+      - beta ignored for camera movement
+      - roll locked to zero
+
+      Intended posture:
+      - phone sideways / landscape
+      - held upright like a small window
+      - tap Recenter in the comfortable forward position
+    */
+
+    const WORLD_RADIUS = 7.5;
+    const EYE_SEPARATION = 0.18;
+    const SMOOTH = 0.22;
+
+    // If up/down feels backward, change to -1.
+    const PITCH_SIGN = 1;
+
+    const rightCanvas = document.getElementById("rightEyeCanvas");
+    const leftCanvas = document.getElementById("leftEyeCanvas");
+    const enableBtn = document.getElementById("enable");
+    const tinyStatus = document.getElementById("tinyStatus");
+
+    const rightEngine = new BABYLON.Engine(rightCanvas, true);
+    const leftEngine = new BABYLON.Engine(leftCanvas, true);
+
+    const look = {
+      enabled: false,
+
+      yaw: 0,
+      pitch: 0,
+      targetYaw: 0,
+      targetPitch: 0,
+
+      zeroYawRaw: null,
+      zeroPitchRaw: null,
+
       alpha: null,
       beta: null,
       gamma: null,
-      absolute: null,
       compass: null,
-      accel: null,
-      rotationRate: null,
-      errors: []
+      screenAngle: 0,
+
+      ax: null,
+      ay: null,
+      az: null,
+
+      orientationEvents: 0,
+      motionEvents: 0
     };
 
-    function fmt(n) {
-      return Number.isFinite(n) ? Number(n).toFixed(3) : String(n);
+    function setTinyStatus(msg) {
+      tinyStatus.textContent = msg;
     }
 
-    function render() {
-      const now = Date.now();
-      out.textContent =
-`secure context: ${state.secure}
-DeviceOrientationEvent exists: ${typeof DeviceOrientationEvent !== "undefined"}
-DeviceOrientationEvent.requestPermission exists: ${typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function"}
-DeviceMotionEvent exists: ${typeof DeviceMotionEvent !== "undefined"}
-DeviceMotionEvent.requestPermission exists: ${typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function"}
+    function clamp(v, lo, hi) {
+      return Math.max(lo, Math.min(hi, v));
+    }
 
-permission orientation: ${state.permissionOrientation}
-permission motion: ${state.permissionMotion}
+    function degToRad(d) {
+      return (Number(d) || 0) * Math.PI / 180;
+    }
 
-orientation events: ${state.orientationEvents}
-last orientation: ${state.lastOrientationAt ? (now - state.lastOrientationAt) + " ms ago" : "never"}
-alpha: ${fmt(state.alpha)}
-beta: ${fmt(state.beta)}
-gamma: ${fmt(state.gamma)}
-absolute: ${state.absolute}
-webkitCompassHeading: ${fmt(state.compass)}
+    function radToDeg(r) {
+      return r * 180 / Math.PI;
+    }
 
-motion events: ${state.motionEvents}
-last motion: ${state.lastMotionAt ? (now - state.lastMotionAt) + " ms ago" : "never"}
-accelerationIncludingGravity: ${state.accel ? JSON.stringify(state.accel) : "null"}
-rotationRate: ${state.rotationRate ? JSON.stringify(state.rotationRate) : "null"}
+    function normalizeRad(a) {
+      while (a > Math.PI) a -= Math.PI * 2;
+      while (a < -Math.PI) a += Math.PI * 2;
+      return a;
+    }
 
-errors:
-${state.errors.length ? state.errors.join("\n") : "none"}
+    function screenAngleDeg() {
+      if (screen.orientation && typeof screen.orientation.angle === "number") return screen.orientation.angle;
+      if (typeof window.orientation === "number") return window.orientation;
+      return 0;
+    }
 
-userAgent:
-${state.userAgent}`;
+    function makeMat(scene, name, hex, emissivePower = 0.18, alpha = 1) {
+      const mat = new BABYLON.StandardMaterial(name, scene);
+      const c = BABYLON.Color3.FromHexString(hex);
+      mat.diffuseColor = c;
+      mat.emissiveColor = c.scale(emissivePower);
+      mat.specularColor = BABYLON.Color3.Black();
+      mat.alpha = alpha;
+      return mat;
+    }
+
+    function addShape(scene, kind, name, x, y, z, hex) {
+      let mesh;
+      if (kind === "box") {
+        mesh = BABYLON.MeshBuilder.CreateBox(name, { size: 1.3 }, scene);
+      } else if (kind === "sphere") {
+        mesh = BABYLON.MeshBuilder.CreateSphere(name, { diameter: 1.45, segments: 32 }, scene);
+      } else if (kind === "cylinder") {
+        mesh = BABYLON.MeshBuilder.CreateCylinder(name, { diameter: 1.25, height: 1.7, tessellation: 32 }, scene);
+      } else if (kind === "cone") {
+        mesh = BABYLON.MeshBuilder.CreateCylinder(name, { diameterTop: 0, diameterBottom: 1.45, height: 1.8, tessellation: 32 }, scene);
+      } else if (kind === "torus") {
+        mesh = BABYLON.MeshBuilder.CreateTorus(name, { diameter: 1.55, thickness: 0.22, tessellation: 48 }, scene);
+      } else {
+        mesh = BABYLON.MeshBuilder.CreateBox(name, { size: 1.3 }, scene);
+      }
+      mesh.position.set(x, y, z);
+      mesh.material = makeMat(scene, name + "Mat", hex);
+      return mesh;
+    }
+
+    function addBillboardText(scene, name, text, x, y, z, hex) {
+      const plane = BABYLON.MeshBuilder.CreatePlane(name, { width: 2.7, height: 0.7 }, scene);
+      plane.position.set(x, y, z);
+      plane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
+
+      const texture = new BABYLON.DynamicTexture(name + "Tex", { width: 512, height: 128 }, scene, true);
+      const ctx = texture.getContext();
+      ctx.clearRect(0, 0, 512, 128);
+      ctx.font = "bold 54px Arial";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineWidth = 8;
+      ctx.strokeStyle = "black";
+      ctx.strokeText(text, 256, 64);
+      ctx.fillStyle = hex;
+      ctx.fillText(text, 256, 64);
+      texture.update();
+
+      const mat = new BABYLON.StandardMaterial(name + "Mat", scene);
+      mat.diffuseTexture = texture;
+      mat.emissiveTexture = texture;
+      mat.opacityTexture = texture;
+      mat.disableLighting = true;
+      mat.specularColor = BABYLON.Color3.Black();
+      plane.material = mat;
+      return plane;
+    }
+
+    function makeScene(engine, canvas, eyeOffsetX, name) {
+      const scene = new BABYLON.Scene(engine);
+      scene.clearColor = new BABYLON.Color4(0.02, 0.03, 0.05, 1);
+
+      const camera = new BABYLON.FreeCamera(
+        name + "Camera",
+        new BABYLON.Vector3(eyeOffsetX, 0, 0),
+        scene
+      );
+      camera.minZ = 0.01;
+      camera.maxZ = 1000;
+      camera.fov = BABYLON.Tools.ToRadians(74);
+      scene.activeCamera = camera;
+
+      const hemi = new BABYLON.HemisphericLight(name + "Hemi", new BABYLON.Vector3(0, 1, 0), scene);
+      hemi.intensity = 0.9;
+
+      const centerLight = new BABYLON.PointLight(name + "CenterLight", new BABYLON.Vector3(0, 0, 0), scene);
+      centerLight.intensity = 0.8;
+      centerLight.range = 24;
+
+      const ghost = BABYLON.MeshBuilder.CreateSphere(name + "OriginGhost", { diameter: 0.25, segments: 16 }, scene);
+      ghost.material = makeMat(scene, name + "GhostMat", "#ffffff", 0.5, 0.38);
+
+      addShape(scene, "box",      name + "FrontCube",    0,    0,     WORLD_RADIUS, "#008cff");
+      addShape(scene, "sphere",   name + "BackSphere",   0,    0,    -WORLD_RADIUS, "#ffb000");
+      addShape(scene, "cylinder", name + "LeftColumn",  -WORLD_RADIUS, 0, 0, "#22c55e");
+      addShape(scene, "cone",     name + "RightCone",    WORLD_RADIUS, 0, 0, "#f43f5e");
+      addShape(scene, "torus",    name + "TopRing",      0,    WORLD_RADIUS * 0.72, 0, "#a855f7");
+      addShape(scene, "box",      name + "BottomCube",   0,   -WORLD_RADIUS * 0.72, 0, "#14b8a6");
+
+      addBillboardText(scene, name + "LabelFront", "FRONT", 0, 1.45, WORLD_RADIUS, "#dbeafe");
+      addBillboardText(scene, name + "LabelBack", "BACK", 0, 1.45, -WORLD_RADIUS, "#fde68a");
+      addBillboardText(scene, name + "LabelLeft", "LEFT", -WORLD_RADIUS, 1.45, 0, "#bbf7d0");
+      addBillboardText(scene, name + "LabelRight", "RIGHT", WORLD_RADIUS, 1.45, 0, "#fecdd3");
+      addBillboardText(scene, name + "LabelAbove", "ABOVE", 0, WORLD_RADIUS * 0.72 + 1.45, 0, "#e9d5ff");
+      addBillboardText(scene, name + "LabelBelow", "BELOW", 0, -WORLD_RADIUS * 0.72 - 1.45, 0, "#ccfbf1");
+
+      const ringMat = makeMat(scene, name + "RingMat", "#64748b", 0.25, 0.35);
+
+      const ringXZ = BABYLON.MeshBuilder.CreateTorus(name + "RingXZ", {
+        diameter: WORLD_RADIUS * 2,
+        thickness: 0.035,
+        tessellation: 128
+      }, scene);
+      ringXZ.rotation.x = Math.PI / 2;
+      ringXZ.material = ringMat;
+
+      const ringXY = BABYLON.MeshBuilder.CreateTorus(name + "RingXY", {
+        diameter: WORLD_RADIUS * 2,
+        thickness: 0.035,
+        tessellation: 128
+      }, scene);
+      ringXY.material = ringMat;
+
+      const ringYZ = BABYLON.MeshBuilder.CreateTorus(name + "RingYZ", {
+        diameter: WORLD_RADIUS * 2,
+        thickness: 0.035,
+        tessellation: 128
+      }, scene);
+      ringYZ.rotation.y = Math.PI / 2;
+      ringYZ.material = ringMat;
+
+      const proof = BABYLON.MeshBuilder.CreateSphere(name + "StereoProofDot", {
+        diameter: 0.13,
+        segments: 12
+      }, scene);
+      proof.position.set(eyeOffsetX * 2.6, -0.38, 1.3);
+      proof.material = makeMat(
+        scene,
+        name + "StereoProofDotMat",
+        eyeOffsetX > 0 ? "#ff5a5a" : "#5aa7ff",
+        0.75,
+        0.9
+      );
+
+      scene.onBeforeRenderObservable.add(() => {
+        look.yaw = normalizeRad(look.yaw + normalizeRad(look.targetYaw - look.yaw) * SMOOTH);
+        look.pitch = look.pitch + (look.targetPitch - look.pitch) * SMOOTH;
+
+        const c = Math.cos(look.yaw);
+        const s = Math.sin(look.yaw);
+
+        const x = eyeOffsetX * c;
+        const z = -eyeOffsetX * s;
+
+        camera.position.set(x, 0, z);
+        camera.rotation.x = look.pitch;
+        camera.rotation.y = look.yaw;
+        camera.rotation.z = 0;
+      });
+
+      return scene;
+    }
+
+    const rightScene = makeScene(rightEngine, rightCanvas, +EYE_SEPARATION / 2, "right");
+    const leftScene = makeScene(leftEngine, leftCanvas, -EYE_SEPARATION / 2, "left");
+
+    rightEngine.runRenderLoop(() => {
+      rightScene.render();
+      leftScene.render();
+    });
+
+    window.addEventListener("resize", () => {
+      rightEngine.resize();
+      leftEngine.resize();
+    });
+
+    function yawRawFromOrientation() {
+      if (look.compass !== null) {
+        return -degToRad(look.compass) + degToRad(look.screenAngle);
+      }
+      if (look.alpha !== null) {
+        return degToRad(look.alpha) + degToRad(look.screenAngle);
+      }
+      return null;
+    }
+
+    function pitchRawFromGravity() {
+      /*
+        In your proof page, when the phone was sideways/upright:
+        accelerationIncludingGravity.x was around +10,
+        z changed as you tipped the phone.
+
+        So pitch = atan2(z, x). Recenter subtracts the neutral angle.
+      */
+      if (!Number.isFinite(look.ax) || !Number.isFinite(look.az)) return null;
+      return Math.atan2(look.az, look.ax);
+    }
+
+    function updateTargets() {
+      if (!look.enabled) return;
+
+      const yawRaw = yawRawFromOrientation();
+      const pitchRaw = pitchRawFromGravity();
+
+      if (yawRaw === null || pitchRaw === null) return;
+
+      if (look.zeroYawRaw === null) look.zeroYawRaw = yawRaw;
+      if (look.zeroPitchRaw === null) look.zeroPitchRaw = pitchRaw;
+
+      look.targetYaw = normalizeRad(yawRaw - look.zeroYawRaw);
+      look.targetPitch = clamp(normalizeRad(pitchRaw - look.zeroPitchRaw) * PITCH_SIGN, -1.22, 1.22);
+
+      setTinyStatus(
+        "compass + gravity fixed\n" +
+        "orient " + look.orientationEvents +
+        " | motion " + look.motionEvents +
+        " | yaw " + radToDeg(look.targetYaw).toFixed(0) +
+        " | pitch " + radToDeg(look.targetPitch).toFixed(0) +
+        "\ncompass " + (look.compass ?? "null") +
+        " | ax " + (look.ax?.toFixed ? look.ax.toFixed(2) : look.ax) +
+        " | az " + (look.az?.toFixed ? look.az.toFixed(2) : look.az)
+      );
     }
 
     function onOrientation(ev) {
-      state.orientationEvents += 1;
-      state.lastOrientationAt = Date.now();
-      state.alpha = ev.alpha;
-      state.beta = ev.beta;
-      state.gamma = ev.gamma;
-      state.absolute = ev.absolute;
-      state.compass = Number.isFinite(ev.webkitCompassHeading) ? ev.webkitCompassHeading : null;
-      render();
+      look.orientationEvents += 1;
+      look.alpha = Number.isFinite(ev.alpha) ? ev.alpha : null;
+      look.beta = Number.isFinite(ev.beta) ? ev.beta : null;
+      look.gamma = Number.isFinite(ev.gamma) ? ev.gamma : null;
+      look.compass = Number.isFinite(ev.webkitCompassHeading) ? ev.webkitCompassHeading : null;
+      look.screenAngle = screenAngleDeg();
+      updateTargets();
     }
 
     function onMotion(ev) {
-      state.motionEvents += 1;
-      state.lastMotionAt = Date.now();
-
+      look.motionEvents += 1;
       const a = ev.accelerationIncludingGravity || ev.acceleration;
-      state.accel = a ? {
-        x: Number.isFinite(a.x) ? Number(a.x.toFixed(3)) : null,
-        y: Number.isFinite(a.y) ? Number(a.y.toFixed(3)) : null,
-        z: Number.isFinite(a.z) ? Number(a.z.toFixed(3)) : null
-      } : null;
-
-      const r = ev.rotationRate;
-      state.rotationRate = r ? {
-        alpha: Number.isFinite(r.alpha) ? Number(r.alpha.toFixed(3)) : null,
-        beta: Number.isFinite(r.beta) ? Number(r.beta.toFixed(3)) : null,
-        gamma: Number.isFinite(r.gamma) ? Number(r.gamma.toFixed(3)) : null
-      } : null;
-
-      render();
+      if (a) {
+        look.ax = Number.isFinite(a.x) ? a.x : null;
+        look.ay = Number.isFinite(a.y) ? a.y : null;
+        look.az = Number.isFinite(a.z) ? a.z : null;
+      }
+      updateTargets();
     }
 
     window.addEventListener("deviceorientation", onOrientation, true);
     window.addEventListener("deviceorientationabsolute", onOrientation, true);
     window.addEventListener("devicemotion", onMotion, true);
 
-    btn.addEventListener("click", async () => {
-      state.errors = [];
-
+    async function requestPermissions() {
       try {
         if (typeof DeviceMotionEvent !== "undefined" &&
             typeof DeviceMotionEvent.requestPermission === "function") {
-          state.permissionMotion = await DeviceMotionEvent.requestPermission();
-        } else {
-          state.permissionMotion = "no requestPermission API";
+          const r = await DeviceMotionEvent.requestPermission();
+          if (r !== "granted") return false;
         }
-      } catch (e) {
-        state.permissionMotion = "error";
-        state.errors.push("motion permission error: " + (e.message || e));
-      }
 
-      try {
         if (typeof DeviceOrientationEvent !== "undefined" &&
             typeof DeviceOrientationEvent.requestPermission === "function") {
-          state.permissionOrientation = await DeviceOrientationEvent.requestPermission();
-        } else {
-          state.permissionOrientation = "no requestPermission API";
+          const r = await DeviceOrientationEvent.requestPermission();
+          if (r !== "granted") return false;
         }
+
+        return true;
       } catch (e) {
-        state.permissionOrientation = "error";
-        state.errors.push("orientation permission error: " + (e.message || e));
+        setTinyStatus("permission error");
+        return false;
       }
+    }
 
-      render();
+    enableBtn.addEventListener("click", async () => {
+      look.zeroYawRaw = null;
+      look.zeroPitchRaw = null;
+      look.targetYaw = 0;
+      look.targetPitch = 0;
+      look.yaw = 0;
+      look.pitch = 0;
+
+      const ok = await requestPermissions();
+      look.enabled = ok;
+
+      if (ok) {
+        enableBtn.textContent = "Recenter";
+        setTinyStatus("motion enabled - compass + gravity");
+        setTimeout(() => { enableBtn.style.opacity = "0.35"; }, 1000);
+      } else {
+        enableBtn.textContent = "Motion blocked";
+        setTinyStatus("motion unavailable or blocked");
+      }
     });
 
-    reset.addEventListener("click", () => {
-      state.orientationEvents = 0;
-      state.motionEvents = 0;
-      state.lastOrientationAt = null;
-      state.lastMotionAt = null;
-      state.alpha = null;
-      state.beta = null;
-      state.gamma = null;
-      state.absolute = null;
-      state.compass = null;
-      state.accel = null;
-      state.rotationRate = null;
-      state.errors = [];
-      render();
-    });
-
-    setInterval(render, 1000);
-    render();
+    setTinyStatus("graphics loaded - compass + gravity - tap enable");
   </script>
 </body>
 </html>
