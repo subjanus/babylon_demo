@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Cross-eye 3D Shape Field - Quaternion Fixed</title>
+  <title>Cross-eye 3D Shape Field - Wrapped Angles Fixed</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <style>
     html, body {
@@ -73,27 +73,33 @@
 
   <script>
     /*
-      Quaternion-fixed phone orientation version.
+      Wrapped-angle fixed version.
 
-      Why this exists:
-      - Direct alpha/beta/gamma mapping breaks when beta approaches +/-180.
-      - That causes yaw to appear to change during top-edge tilt.
-      - Here we convert the device orientation into a quaternion first.
-      - Then we calculate the camera forward vector from the quaternion.
-      - Then we extract yaw and pitch from that vector.
-      - Roll is never applied.
+      This returns to the working alpha/beta approach, but fixes the bug shown
+      in the screenshots: beta can wrap near +/-180 degrees. Raw subtraction
+      makes that look like a giant movement. We now compute angle deltas with
+      normalizeRad(), so 179 -> -179 behaves like 2 degrees, not 358 degrees.
 
       Intended posture:
-      - Phone sideways / landscape.
-      - Phone held upright like a window.
-      - Tap Recenter in your comfortable forward posture.
+      - phone sideways / landscape
+      - phone upright like a small window
+      - tap Recenter while holding the comfortable forward pose
+
+      Controls:
+      - alpha/safari compass = yaw
+      - beta = pitch
+      - gamma ignored
+      - camera roll locked to 0
     */
 
     const WORLD_RADIUS = 7.5;
     const EYE_SEPARATION = 0.18;
 
-    // If up/down feels backward, change this to -1.
+    // Change to -1 if up/down feels backward.
     const PITCH_SIGN = 1;
+
+    // Mild smoothing keeps sensor jitter down without freezing motion.
+    const SMOOTH = 0.28;
 
     const rightCanvas = document.getElementById("rightEyeCanvas");
     const leftCanvas = document.getElementById("leftEyeCanvas");
@@ -105,11 +111,15 @@
 
     const look = {
       enabled: false,
+
       yaw: 0,
       pitch: 0,
 
-      zeroYaw: null,
-      zeroPitch: null,
+      targetYaw: 0,
+      targetPitch: 0,
+
+      zeroYawRaw: null,
+      zeroPitchRaw: null,
 
       alpha: null,
       beta: null,
@@ -231,6 +241,7 @@
       const ghost = BABYLON.MeshBuilder.CreateSphere(name + "OriginGhost", { diameter: 0.25, segments: 16 }, scene);
       ghost.material = makeMat(scene, name + "GhostMat", "#ffffff", 0.5, 0.38);
 
+      // Main six test shapes.
       addShape(scene, "box",      name + "FrontCube",    0,    0,     WORLD_RADIUS, "#008cff");
       addShape(scene, "sphere",   name + "BackSphere",   0,    0,    -WORLD_RADIUS, "#ffb000");
       addShape(scene, "cylinder", name + "LeftColumn",  -WORLD_RADIUS, 0, 0, "#22c55e");
@@ -238,6 +249,7 @@
       addShape(scene, "torus",    name + "TopRing",      0,    WORLD_RADIUS * 0.72, 0, "#a855f7");
       addShape(scene, "box",      name + "BottomCube",   0,   -WORLD_RADIUS * 0.72, 0, "#14b8a6");
 
+      // Labels.
       addBillboardText(scene, name + "LabelFront", "FRONT", 0, 1.45, WORLD_RADIUS, "#dbeafe");
       addBillboardText(scene, name + "LabelBack", "BACK", 0, 1.45, -WORLD_RADIUS, "#fde68a");
       addBillboardText(scene, name + "LabelLeft", "LEFT", -WORLD_RADIUS, 1.45, 0, "#bbf7d0");
@@ -245,6 +257,7 @@
       addBillboardText(scene, name + "LabelAbove", "ABOVE", 0, WORLD_RADIUS * 0.72 + 1.45, 0, "#e9d5ff");
       addBillboardText(scene, name + "LabelBelow", "BELOW", 0, -WORLD_RADIUS * 0.72 - 1.45, 0, "#ccfbf1");
 
+      // Ring cage.
       const ringMat = makeMat(scene, name + "RingMat", "#64748b", 0.25, 0.35);
 
       const ringXZ = BABYLON.MeshBuilder.CreateTorus(name + "RingXZ", {
@@ -270,6 +283,7 @@
       ringYZ.rotation.y = Math.PI / 2;
       ringYZ.material = ringMat;
 
+      // Stereo proof dot. Different color per pane.
       const proof = BABYLON.MeshBuilder.CreateSphere(name + "StereoProofDot", {
         diameter: 0.13,
         segments: 12
@@ -284,6 +298,10 @@
       );
 
       scene.onBeforeRenderObservable.add(() => {
+        // Smooth toward the latest sensor target.
+        look.yaw = normalizeRad(look.yaw + normalizeRad(look.targetYaw - look.yaw) * SMOOTH);
+        look.pitch = look.pitch + (look.targetPitch - look.pitch) * SMOOTH;
+
         // Eye pivot follows yaw only. Pitch changes view direction only.
         const c = Math.cos(look.yaw);
         const s = Math.sin(look.yaw);
@@ -314,49 +332,26 @@
       leftEngine.resize();
     });
 
-    function deviceQuaternionFromEuler(alphaDeg, betaDeg, gammaDeg, screenDeg) {
-      /*
-        Based on the standard DeviceOrientation Z-X'-Y'' sequence:
-        alpha around Z, beta around X, gamma around Y.
-        Then rotate by screen orientation.
+    function yawRawFromEvent() {
+      // Prefer alpha over compass here because the screenshots showed compass/heading
+      // and beta wrap fighting each other. Alpha still wraps, but we fix that with
+      // normalizeRad(raw - zero).
+      if (look.alpha !== null) {
+        return degToRad(look.alpha) + degToRad(look.screenAngle);
+      }
 
-        We use Babylon quaternions so beta wrap-around does not scramble our yaw.
-      */
-      const alpha = degToRad(alphaDeg || 0);
-      const beta = degToRad(betaDeg || 0);
-      const gamma = degToRad(gammaDeg || 0);
-      const orient = degToRad(screenDeg || 0);
+      if (look.compass !== null) {
+        return -degToRad(look.compass) + degToRad(look.screenAngle);
+      }
 
-      const qAlpha = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Z, alpha);
-      const qBeta = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.X, beta);
-      const qGamma = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Y, gamma);
-      const qScreen = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Z, -orient);
-
-      // Device orientation order.
-      return qScreen.multiply(qAlpha).multiply(qBeta).multiply(qGamma);
+      return null;
     }
 
-    function yawPitchFromDeviceQuaternion(q) {
-      /*
-        We need a stable "look vector" for a landscape phone held like a window.
-
-        For a phone in this posture, the screen's normal is the direction the screen faces.
-        In local device terms, use +Z as the approximate outward screen normal.
-
-        We transform that vector by the full quaternion, then pull yaw and pitch from it.
-        Since yaw/pitch come from a vector, roll cannot leak into the camera.
-      */
-      const m = BABYLON.Matrix.FromQuaternion(q);
-      const forward = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0, 0, 1), m).normalize();
-
-      // Horizontal heading.
-      const yaw = Math.atan2(forward.x, forward.z);
-
-      // Vertical look angle.
-      const flat = Math.sqrt(forward.x * forward.x + forward.z * forward.z);
-      const pitch = Math.atan2(forward.y, flat);
-
-      return { yaw, pitch };
+    function pitchRawFromEvent() {
+      // Beta drives top-edge-forward/top-edge-back pitch.
+      // The important fix is using normalized angular delta after recenter.
+      if (look.beta === null) return null;
+      return degToRad(look.beta);
     }
 
     function applyOrientation(ev) {
@@ -368,43 +363,39 @@
       look.screenAngle = screenAngleDeg();
 
       if (!look.enabled) {
-        setTinyStatus(
-          "events " + look.orientationCount +
-          " | waiting for enable"
-        );
+        setTinyStatus("events " + look.orientationCount + " | waiting for enable");
         return;
       }
 
-      if (look.alpha === null || look.beta === null || look.gamma === null) {
-        setTinyStatus("orientation missing alpha/beta/gamma");
+      const yawRaw = yawRawFromEvent();
+      const pitchRaw = pitchRawFromEvent();
+
+      if (yawRaw === null || pitchRaw === null) {
+        setTinyStatus("missing yaw or pitch sensor values");
         return;
       }
 
-      const q = deviceQuaternionFromEuler(look.alpha, look.beta, look.gamma, look.screenAngle);
-      let yp = yawPitchFromDeviceQuaternion(q);
+      if (look.zeroYawRaw === null) look.zeroYawRaw = yawRaw;
+      if (look.zeroPitchRaw === null) look.zeroPitchRaw = pitchRaw;
 
-      // iPhone compass is usually better for yaw heading when available,
-      // but we still use quaternion-derived pitch.
-      if (look.compass !== null) {
-        yp.yaw = -degToRad(look.compass) + degToRad(look.screenAngle);
-      }
+      // Here is the actual fix: wrapped angular deltas.
+      let yawDelta = normalizeRad(yawRaw - look.zeroYawRaw);
+      let pitchDelta = normalizeRad(pitchRaw - look.zeroPitchRaw) * PITCH_SIGN;
 
-      yp.pitch = clamp(yp.pitch * PITCH_SIGN, -1.22, 1.22);
+      // If the pitch motion gets extreme, keep it usable.
+      pitchDelta = clamp(pitchDelta, -1.22, 1.22);
 
-      if (look.zeroYaw === null) look.zeroYaw = yp.yaw;
-      if (look.zeroPitch === null) look.zeroPitch = yp.pitch;
-
-      look.yaw = normalizeRad(yp.yaw - look.zeroYaw);
-      look.pitch = clamp(yp.pitch - look.zeroPitch, -1.22, 1.22);
+      look.targetYaw = yawDelta;
+      look.targetPitch = pitchDelta;
 
       setTinyStatus(
-        "quaternion fixed\n" +
+        "wrapped angles fixed\n" +
         "events " + look.orientationCount +
-        " | yaw " + radToDeg(look.yaw).toFixed(0) +
-        " | pitch " + radToDeg(look.pitch).toFixed(0) +
+        " | yaw " + radToDeg(look.targetYaw).toFixed(0) +
+        " | pitch " + radToDeg(look.targetPitch).toFixed(0) +
         "\nalpha " + (look.alpha ?? "null") +
         " | beta " + (look.beta ?? "null") +
-        " | gamma " + (look.gamma ?? "null")
+        " | gamma ignored"
       );
     }
 
@@ -433,15 +424,19 @@
     }
 
     enableBtn.addEventListener("click", async () => {
-      look.zeroYaw = null;
-      look.zeroPitch = null;
+      look.zeroYawRaw = null;
+      look.zeroPitchRaw = null;
+      look.targetYaw = 0;
+      look.targetPitch = 0;
+      look.yaw = 0;
+      look.pitch = 0;
 
       const ok = await requestPermissions();
       look.enabled = ok;
 
       if (ok) {
         enableBtn.textContent = "Recenter";
-        setTinyStatus("motion enabled - quaternion fixed");
+        setTinyStatus("motion enabled - wrapped angle fix");
         setTimeout(() => { enableBtn.style.opacity = "0.35"; }, 1000);
       } else {
         enableBtn.textContent = "Motion blocked";
@@ -449,7 +444,7 @@
       }
     });
 
-    setTinyStatus("graphics loaded - quaternion fixed - tap enable");
+    setTinyStatus("graphics loaded - wrapped angle fix - tap enable");
   </script>
 </body>
 </html>
