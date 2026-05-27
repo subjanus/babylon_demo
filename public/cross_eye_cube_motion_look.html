@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Cross-eye 3D Shape Field - Human Eye Pivot Safe</title>
+  <title>Cross-eye 3D Shape Field - Landscape Upright Fixed</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <style>
     html, body {
@@ -51,10 +51,12 @@
       right: 8px;
       bottom: 6px;
       z-index: 5;
-      color: rgba(203, 213, 225, 0.70);
+      color: rgba(203, 213, 225, 0.72);
       font-size: 10px;
       pointer-events: none;
       text-shadow: 0 1px 2px black;
+      white-space: pre;
+      text-align: right;
     }
   </style>
 </head>
@@ -70,15 +72,24 @@
   <div id="tinyStatus">loading</div>
 
   <script>
-    // Safe version: no projection overrides, no quaternions, no GUI library.
-    // Human-ish stereo model:
-    // - both eyes share yaw/pitch
-    // - roll stays locked
-    // - each eye is offset from the head center
-    // - eye offset rotates around the head pivot when yaw changes
+    /*
+      Fixed landscape-upright version.
+
+      Intended phone posture:
+      - Phone is sideways / landscape.
+      - Phone is held mostly upright, like a small windshield.
+      - Turning your body/phone left-right changes yaw.
+      - Tipping the top edge forward/back changes pitch.
+      - Rolling the phone clockwise/counterclockwise is ignored.
+
+      Important mapping change:
+      - beta drives pitch.
+      - gamma is ignored.
+      - camera.rotation.z is always 0.
+    */
 
     const WORLD_RADIUS = 7.5;
-    const EYE_SEPARATION = 0.18; // exaggerated enough for browser cross-eye testing
+    const EYE_SEPARATION = 0.18;
 
     const rightCanvas = document.getElementById("rightEyeCanvas");
     const leftCanvas = document.getElementById("leftEyeCanvas");
@@ -92,8 +103,10 @@
       enabled: false,
       yaw: 0,
       pitch: 0,
+
       zeroYaw: null,
       zeroPitch: null,
+
       alpha: null,
       beta: null,
       gamma: null,
@@ -112,6 +125,10 @@
 
     function degToRad(d) {
       return (Number(d) || 0) * Math.PI / 180;
+    }
+
+    function radToDeg(r) {
+      return r * 180 / Math.PI;
     }
 
     function normalizeRad(a) {
@@ -267,9 +284,9 @@
       );
 
       scene.onBeforeRenderObservable.add(() => {
-        // Human-eye pivot, safe Euler version.
-        // Rotate the eye offset around the head center by yaw only.
-        // Pitch changes view direction, but does not try to move the eye in space.
+        // Safe human-eye pivot:
+        // The eye offset rides around the center with yaw.
+        // Pitch changes only where the eyes look, not their physical height.
         const c = Math.cos(look.yaw);
         const s = Math.sin(look.yaw);
 
@@ -278,7 +295,7 @@
 
         camera.position.set(x, 0, z);
 
-        // Both eyes look in the same direction. No roll, no toe-in.
+        // Roll is hard-locked. Gamma is never used.
         camera.rotation.x = look.pitch;
         camera.rotation.y = look.yaw;
         camera.rotation.z = 0;
@@ -300,6 +317,29 @@
       leftEngine.resize();
     });
 
+    function computeYawRaw() {
+      if (look.compass !== null) {
+        // iPhone Safari compass: degrees clockwise from north.
+        return -degToRad(look.compass) + degToRad(look.screenAngle);
+      }
+
+      if (look.alpha !== null) {
+        // Generic fallback.
+        return degToRad(look.alpha) + degToRad(look.screenAngle);
+      }
+
+      return null;
+    }
+
+    function computePitchRawLandscapeUpright() {
+      /*
+        For the sideways/upright phone posture, beta is the useful forward/back tilt.
+        The earlier gamma-based version was causing side-roll to masquerade as pitch.
+        We intentionally ignore gamma completely.
+      */
+      return degToRad(look.beta || 0);
+    }
+
     function applyOrientation(ev) {
       look.orientationCount += 1;
       look.alpha = Number.isFinite(ev.alpha) ? ev.alpha : null;
@@ -308,39 +348,39 @@
       look.compass = Number.isFinite(ev.webkitCompassHeading) ? ev.webkitCompassHeading : null;
       look.screenAngle = screenAngleDeg();
 
-      if (!look.enabled) return;
-
-      let yawRaw = null;
-      if (look.compass !== null) {
-        yawRaw = -degToRad(look.compass) + degToRad(look.screenAngle);
-      } else if (look.alpha !== null) {
-        yawRaw = degToRad(look.alpha) + degToRad(look.screenAngle);
+      if (!look.enabled) {
+        setTinyStatus(
+          "events " + look.orientationCount +
+          " | waiting for enable"
+        );
+        return;
       }
 
+      const yawRaw = computeYawRaw();
       if (yawRaw === null) return;
 
-      const absScreen = Math.abs(Number(look.screenAngle) || 0);
-      const landscape = absScreen === 90 || absScreen === 270;
+      let pitchRaw = computePitchRawLandscapeUpright();
 
-      let pitchRaw;
-      if (landscape) {
-        pitchRaw = -degToRad(look.gamma || 0);
-      } else {
-        pitchRaw = degToRad(look.beta || 0) - Math.PI / 2;
-      }
-
-      pitchRaw = clamp(pitchRaw, -1.20, 1.20);
+      // Comfortable limit: about +/- 70 degrees.
+      pitchRaw = clamp(pitchRaw, -1.22, 1.22);
 
       if (look.zeroYaw === null) look.zeroYaw = yawRaw;
       if (look.zeroPitch === null) look.zeroPitch = pitchRaw;
 
       look.yaw = normalizeRad(yawRaw - look.zeroYaw);
-      look.pitch = clamp((pitchRaw - look.zeroPitch) * 1.15, -1.20, 1.20);
+
+      // Depending on hand posture, this sign is the usual "top edge forward = look down".
+      // If it feels backwards, flip the sign on this one line.
+      look.pitch = clamp(pitchRaw - look.zeroPitch, -1.22, 1.22);
 
       setTinyStatus(
+        "landscape-upright fixed\n" +
         "events " + look.orientationCount +
-        " | yaw " + (look.yaw * 180 / Math.PI).toFixed(0) +
-        " | pitch " + (look.pitch * 180 / Math.PI).toFixed(0)
+        " | yaw " + radToDeg(look.yaw).toFixed(0) +
+        " | pitch " + radToDeg(look.pitch).toFixed(0) +
+        "\nalpha " + (look.alpha ?? "null") +
+        " | beta " + (look.beta ?? "null") +
+        " | gamma ignored"
       );
     }
 
@@ -377,7 +417,7 @@
 
       if (ok) {
         enableBtn.textContent = "Recenter";
-        setTinyStatus("motion enabled");
+        setTinyStatus("motion enabled - beta pitch, gamma ignored");
         setTimeout(() => { enableBtn.style.opacity = "0.35"; }, 1000);
       } else {
         enableBtn.textContent = "Motion blocked";
@@ -385,7 +425,7 @@
       }
     });
 
-    setTinyStatus("graphics loaded - safe human-eye pivot - tap enable");
+    setTinyStatus("graphics loaded - landscape upright fixed - tap enable");
   </script>
 </body>
 </html>
