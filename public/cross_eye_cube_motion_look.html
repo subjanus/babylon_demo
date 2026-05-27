@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Cross-eye 3D Shape Field - Compass Gravity Fixed</title>
+  <title>Cross-eye 3D Shape Field - Compass Gravity Pitch Flipped</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <style>
     html, body {
@@ -99,7 +99,7 @@
     const SMOOTH = 0.22;
 
     // If up/down feels backward, change to -1.
-    const PITCH_SIGN = 1;
+    const PITCH_SIGN = -1;
 
     const rightCanvas = document.getElementById("rightEyeCanvas");
     const leftCanvas = document.getElementById("leftEyeCanvas");
@@ -443,7 +443,7 @@
       }
     });
 
-    setTinyStatus("graphics loaded - compass + gravity - tap enable");
+    setTinyStatus("graphics loaded - compass + gravity pitch flipped - tap enable");
   </script>
 </body>
 </html>
