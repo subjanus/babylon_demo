@@ -202,7 +202,7 @@ export function createMotionLab({
     autoButton.textContent = c.postureAutoNormalize ? 'Auto Basis: On' : 'Auto Basis: Off';
 
     readout.textContent =
-`MOTION LAB v3   last mark: ${last}   marks: ${poses.length}\n` +
+`MOTION LAB v3.1   last mark: ${last}   marks: ${poses.length}\n` +
 `VIEW ${s.viewport} ${s.width}x${s.height}   screen ${s.type} @ ${n(s.angle,0)}°\n` +
 `PHYS ${c.physicalPosture || 'unknown'} conf ${n(c.physicalPostureConfidence,2)}   ${mismatch}\n` +
 `BASE ${c.postureBase || 'unknown'} (${n(deg(c.baseRollRad),0)}°)   auto ${c.postureAutoNormalize ? 'ON':'OFF'}\n` +
@@ -211,6 +211,7 @@ export function createMotionLab({
 `compass ${n(raw.compass)}°   accuracy ${n(raw.compassAccuracy)}   absolute ${String(raw.absolute ?? '—')}\n` +
 `FRESH orient ${Number.isFinite(orientAge)?orientAge+'ms':'—'}   applied ${Number.isFinite(appliedAge)?appliedAge+'ms':'—'}   count ${orientCount}   screen changes ${screenChanges}\n` +
 `CALC yaw ${n(deg(c.localYawRad))}°   pitch ${n(deg(c.localPitchRad))}°   roll ${n(deg(c.localRollRad))}°   motion ${c.motionEnabled ? 'ON':'OFF'}\n` +
+`OWNER ${c.cameraControlMode || 'unknown'}   quaternion ${camera.rotationQuaternion ? 'ACTIVE' : 'NONE'}\n` +
 `CAM(q) x ${n(deg(qe?.x))}°   y ${n(deg(qe?.y))}°   z ${n(deg(qe?.z))}°\n` +
 `UP  [${vec(basis?.up)}]   FWD [${vec(basis?.forward)}]\n` +
 `Test: portrait neutral → turn phone sideways and hold ~1s → BASE should adopt; then yaw/pitch should stay natural. Use Auto Basis Off to test roll relative to a frozen holding posture.`;

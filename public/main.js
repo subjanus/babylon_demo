@@ -502,6 +502,7 @@ function initMotionLabOnce() {
       localYawRad, localPitchRad, localRollRad, motionEnabled,
       physicalPosture, physicalPostureConfidence, postureCandidate, postureCandidateSince,
       postureBase, postureAutoNormalize, postureBaseChangedAt, lastOrientationEventAt,
+      cameraControlMode: motionEnabled ? "motion" : ((gestureLab && gestureLab.isEnabled && gestureLab.isEnabled()) ? "gesture" : "pointer"),
       baseRollRad: postureBaseRollRad(postureBase), view: getViewFrameInfo()
     }),
     setAutoNormalize: setPostureAutoNormalize,
@@ -519,6 +520,34 @@ function initGestureLabOnce() {
     onStatus: (msg) => setStatus(msg)
   });
   return gestureLab;
+}
+
+// Camera input arbitration: Babylon FreeCamera pointer controls and the
+// device-orientation engine must not both write camera attitude.  Gesture Lab
+// also owns the touch surface while enabled.
+function syncCameraControlMode() {
+  const gestureOwnsTouch = !!(gestureLab && gestureLab.isEnabled && gestureLab.isEnabled());
+  const sensorOwnsCamera = !!motionEnabled;
+  const detach = sensorOwnsCamera || gestureOwnsTouch;
+  try {
+    if (detach) camera.detachControl(canvas);
+    else camera.attachControl(canvas, true);
+  } catch (_) {}
+  return detach ? (sensorOwnsCamera ? 'motion' : 'gesture') : 'pointer';
+}
+
+function disableMotionCamera() {
+  motionEnabled = false;
+  // Preserve the current visual attitude when handing control back to Babylon's
+  // pointer camera.  FreeCamera pointer inputs work naturally with Euler rotation.
+  try {
+    if (camera.rotationQuaternion) {
+      const e = camera.rotationQuaternion.toEulerAngles();
+      camera.rotationQuaternion = null;
+      camera.rotation.copyFrom(e);
+    }
+  } catch (_) {}
+  syncCameraControlMode();
 }
 
 function createDrawerUI() {
@@ -671,11 +700,23 @@ function createDrawerUI() {
   });
 
   mkButton(root, "uiPerm", "Enable Motion", async (btn) => {
+    if (motionEnabled) {
+      disableMotionCamera();
+      btn.textBlock.text = "Enable Motion";
+      setStatus("Motion disabled | finger camera restored");
+      return;
+    }
+
     const ok = await requestDevicePermissions();
     motionEnabled = !!ok;
-    btn.textBlock.text = ok ? "Motion Enabled" : "Motion Blocked";
+    btn.textBlock.text = ok ? "Motion Enabled (tap to disable)" : "Motion Blocked";
     if (!ok) return;
-    setStatus("Motion enabled");
+
+    // Critical: Babylon's FreeCamera pointer input otherwise continues updating
+    // camera rotation and can clear/override the sensor-driven quaternion.
+    syncCameraControlMode();
+    camera.rotationQuaternion = camera.rotationQuaternion || BABYLON.Quaternion.Identity();
+    setStatus("Motion enabled | phone owns camera; finger-look disabled");
   });
 
   mkButton(root, "uiColor", "Toggle Color", () => socket.emit("toggleColor"));
@@ -693,6 +734,9 @@ function createDrawerUI() {
   const bGesture = mkButton(root, "uiGestureLab", "Gesture Lab: Off", (btn) => {
     const lab = initGestureLabOnce();
     const on = lab.setEnabled(!lab.isEnabled());
+    // gestureLab historically re-attaches FreeCamera controls when it turns off.
+    // Reconcile immediately so Motion can retain camera ownership when enabled.
+    syncCameraControlMode();
     btn.textBlock.text = on ? "Gesture Lab: On" : "Gesture Lab: Off";
   });
 
