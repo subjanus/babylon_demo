@@ -8,6 +8,7 @@ const canvas = document.getElementById("renderCanvas");
 const statusEl = document.getElementById("status");
 
 const { engine, scene } = initScene(canvas);
+// Motion Engine v3.4: eye-level horizon + reacquirable ground player marker.
 const camera = initCamera(scene, canvas);
 camera.position.y = 2.4;
 
@@ -255,10 +256,11 @@ function maybeSendOrientationUpdate() {
   socket.emit("orientationUpdate", { yaw });
 }
 function updateLocalHorizon() {
-  horizonRoot.position.set(camera.position.x, camera.position.y - 2.15, camera.position.z);
-  // This ring represents a true world-horizontal plane.  Do not counter-rotate it
-  // against camera Euler angles; the quaternion camera transform should decide how
-  // the real horizon appears on screen.
+  horizonRoot.position.set(camera.position.x, camera.position.y, camera.position.z);
+  // True eye-level horizon guide: keep the ring centered at camera height.
+  // The old version placed it 2.15 m below the camera, which made a level view
+  // visibly dip below center. The camera quaternion alone now determines where
+  // the horizon appears on screen.
   horizonRoot.rotationQuaternion = null;
   horizonRoot.rotation.set(0, 0, 0);
 }
@@ -816,15 +818,28 @@ function isPointerOverDrawerUI(evt) {
 
 function ensurePlayerPointer(id, color) {
   if (playerPointers[id]) return playerPointers[id];
-  const p = BABYLON.MeshBuilder.CreateCylinder(`playerPointer_${id}`, { diameterTop: 0, diameterBottom: 0.9, height: 1.6, tessellation: 4 }, scene);
+
+  // A flat, double-sided triangle is much easier to reacquire when the player
+  // looks down at their own position than the old cone laid on its side.
+  const p = BABYLON.MeshBuilder.CreateDisc(
+    `playerPointer_${id}`,
+    { radius: 0.72, tessellation: 3, sideOrientation: BABYLON.Mesh.DOUBLESIDE },
+    scene
+  );
   const mat = new BABYLON.StandardMaterial(`playerPointerMat_${id}`, scene);
-  mat.diffuseColor = BABYLON.Color3.FromHexString(color || "#FFCC00");
-  mat.emissiveColor = BABYLON.Color3.FromHexString("#1f2937");
+  const c = BABYLON.Color3.FromHexString(color || "#FFCC00");
+  mat.diffuseColor = c;
+  mat.emissiveColor = c.scale(0.45);
   mat.specularColor = BABYLON.Color3.Black();
+  mat.backFaceCulling = false;
   p.material = mat;
   p.parent = worldRoot;
   p.isPickable = true;
+
+  // CreateDisc is vertical by default; lay it flat on the world X/Z plane.
+  // A small elevation prevents z-fighting with future ground geometry.
   p.rotation.x = Math.PI / 2;
+  p.position.y = PLAYER_POINTER_Y;
   playerPointers[id] = p;
   return p;
 }
