@@ -54,32 +54,23 @@ let lockNorth = false;
 let yawZero = 0;
 let yawSmoothed = 0;
 let motionEnabled = false;
-
-// Motion/orientation diagnostics. Keep the working camera transform independent
-// from UI orientation, while retaining enough state to re-apply it immediately
-// when iOS/Android rotates the browser viewport.
-let latestDeviceOrientation = null;
-const motionStats = {
-  orientationEventCount: 0,
-  lastOrientationEventAt: 0,
-  lastCompassAt: 0,
-  lastCompassHeadingDeg: null,
-  lastAppliedAt: 0,
-  screenChangeCount: 0,
-  lastScreenChangeAt: 0,
-  lastScreenAngleDeg: 0
-};
-
-function getScreenAngleDeg() {
-  const a = (screen.orientation && Number.isFinite(screen.orientation.angle))
-    ? screen.orientation.angle
-    : (typeof window.orientation === "number" ? window.orientation : 0);
-  // Normalize the common 0/90/180/270 representation.
-  return ((Number(a) % 360) + 360) % 360;
-}
 let localYawRad = 0;
 let localPitchRad = 0;
 let localRollRad = 0;
+
+// Motion Engine v3 keeps the browser VIEW orientation separate from the
+// PHYSICAL holding posture.  This matters on iPhone when iOS orientation lock
+// keeps Safari portrait while the user physically rotates the phone sideways.
+let physicalPosture = "unknown";
+let physicalPostureConfidence = 0;
+let postureCandidate = "unknown";
+let postureCandidateSince = 0;
+let postureBase = "unknown";
+let postureAutoNormalize = true;
+let postureBaseChangedAt = 0;
+let lastOrientationEventAt = 0;
+const POSTURE_DWELL_MS = 850;
+
 let lastGeoHeadingRad = null;
 let lastYawSent = null;
 let lastYawSentAt = 0;
@@ -283,20 +274,8 @@ function qMul(a, b) {
   );
 }
 function qRotateVector(q, v) {
-  // Rotate a vector directly by quaternion (q * v * q^-1).
-  // Avoid Matrix.FromQuaternion here: it is not available in every Babylon build/CDN version.
-  const qx = q.x, qy = q.y, qz = q.z, qw = q.w;
-  const vx = v.x, vy = v.y, vz = v.z;
-
-  const tx = 2 * (qy * vz - qz * vy);
-  const ty = 2 * (qz * vx - qx * vz);
-  const tz = 2 * (qx * vy - qy * vx);
-
-  return new BABYLON.Vector3(
-    vx + qw * tx + (qy * tz - qz * ty),
-    vy + qw * ty + (qz * tx - qx * tz),
-    vz + qw * tz + (qx * ty - qy * tx)
-  );
+  const m = BABYLON.Matrix.FromQuaternion(q);
+  return BABYLON.Vector3.TransformNormal(v, m);
 }
 function yawFromQuaternion(q) {
   const f = qRotateVector(q, new BABYLON.Vector3(0, 0, 1));
@@ -318,105 +297,137 @@ function rollFromQuaternion(q) {
   return Math.atan2(BABYLON.Vector3.Dot(u, right), BABYLON.Vector3.Dot(u, noRollUp));
 }
 
+function classifyPhysicalPosture(betaDeg, gammaDeg) {
+  if (!Number.isFinite(betaDeg) || !Number.isFinite(gammaDeg)) {
+    return { posture: physicalPosture, confidence: 0 };
+  }
+  const b = BABYLON.Angle.FromDegrees(betaDeg).radians();
+  const g = BABYLON.Angle.FromDegrees(gammaDeg).radians();
+  // For a normally-held portrait phone beta sits near +/-90 and gamma near 0.
+  // For a sideways phone beta moves toward 0 while |gamma| approaches 90.
+  const portraitStrength = Math.abs(Math.sin(b));
+  const landscapeStrength = Math.abs(Math.sin(g));
+  const confidence = Math.min(1, Math.abs(portraitStrength - landscapeStrength));
+
+  if (portraitStrength >= landscapeStrength) {
+    return { posture: betaDeg >= 0 ? "portrait" : "portrait-inverted", confidence };
+  }
+  return { posture: gammaDeg >= 0 ? "landscape-gamma+" : "landscape-gamma-", confidence };
+}
+
+function postureBaseRollRad(posture) {
+  if (posture === "landscape-gamma+") return Math.PI / 2;
+  if (posture === "landscape-gamma-") return -Math.PI / 2;
+  if (posture === "portrait-inverted") return Math.PI;
+  return 0;
+}
+
+function updatePhysicalPosture(betaDeg, gammaDeg, now = Date.now()) {
+  const classified = classifyPhysicalPosture(betaDeg, gammaDeg);
+  physicalPosture = classified.posture;
+  physicalPostureConfidence = classified.confidence;
+
+  // Do not chase noisy classifications.  A candidate must be reasonably clear
+  // and remain stable for a short dwell before Auto Basis adopts it.
+  if (classified.confidence < 0.35 || classified.posture === "unknown") return;
+  if (postureCandidate !== classified.posture) {
+    postureCandidate = classified.posture;
+    postureCandidateSince = now;
+  }
+  if (postureBase === "unknown") {
+    postureBase = classified.posture;
+    postureBaseChangedAt = now;
+    return;
+  }
+  if (postureAutoNormalize && postureBase !== postureCandidate && now - postureCandidateSince >= POSTURE_DWELL_MS) {
+    postureBase = postureCandidate;
+    postureBaseChangedAt = now;
+  }
+}
+
+function adoptCurrentPhysicalPosture() {
+  if (physicalPosture && physicalPosture !== "unknown") {
+    postureBase = physicalPosture;
+    postureCandidate = physicalPosture;
+    postureCandidateSince = Date.now();
+    postureBaseChangedAt = Date.now();
+    return true;
+  }
+  return false;
+}
+
+function setPostureAutoNormalize(on) {
+  postureAutoNormalize = !!on;
+  return postureAutoNormalize;
+}
+
+function getViewFrameInfo() {
+  const so = screen.orientation;
+  const angle = (typeof window.orientation === "number") ? window.orientation : (so?.angle || 0);
+  const viewport = window.innerWidth >= window.innerHeight ? "landscape" : "portrait";
+  return { viewport, width: window.innerWidth, height: window.innerHeight, type: so?.type || "unknown", angle };
+}
+
 function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg = null) {
   if (!Number.isFinite(alphaDeg) || !Number.isFinite(betaDeg) || !Number.isFinite(gammaDeg)) return;
 
-  const screenAngleDeg = getScreenAngleDeg();
+  const now = Date.now();
+  lastOrientationEventAt = now;
+  updatePhysicalPosture(betaDeg, gammaDeg, now);
+
+  const screenAngleDeg = (typeof window.orientation === "number") ? window.orientation : (screen.orientation?.angle || 0);
   const alpha = BABYLON.Angle.FromDegrees(alphaDeg).radians();
   const beta = BABYLON.Angle.FromDegrees(betaDeg).radians();
   const gamma = BABYLON.Angle.FromDegrees(gammaDeg).radians();
   const screen = BABYLON.Angle.FromDegrees(screenAngleDeg || 0).radians();
 
-  // DeviceOrientation Euler order Y-X-Z, followed by the conventional phone
-  // camera correction (-90° about X) and screen-orientation correction.
+  // DeviceOrientation Euler order Y-X-Z, conventional phone camera correction,
+  // then VIEW-orientation correction.  This creates the raw physical attitude.
   let q = qMul(qAxis(0,1,0,alpha), qAxis(1,0,0,beta));
   q = qMul(q, qAxis(0,0,1,-gamma));
   q = qMul(q, qAxis(1,0,0,-Math.PI / 2));
   q = qMul(q, qAxis(0,0,1,-screen));
   q.normalize();
 
-  // alpha is unstable as a compass reference on iOS.  Preserve the full
-  // quaternion attitude but rotate it around WORLD Y so its horizontal heading
-  // agrees with webkitCompassHeading when available.
+  // iOS alpha is a poor north reference.  Preserve full attitude but rotate
+  // around WORLD Y so horizontal heading matches webkitCompassHeading.
   const rawYaw = yawFromQuaternion(q);
   let desiredYaw = rawYaw;
   if (Number.isFinite(compassHeadingDeg)) {
-    desiredYaw = normalizeAngleRad(BABYLON.Angle.FromDegrees(compassHeadingDeg).radians() - screen);
+    desiredYaw = normalizeAngleRad(-BABYLON.Angle.FromDegrees(compassHeadingDeg).radians() + screen);
   } else if (Number.isFinite(lastGeoHeadingRad)) {
-    desiredYaw = normalizeAngleRad(-lastGeoHeadingRad - screen);
+    desiredYaw = normalizeAngleRad(lastGeoHeadingRad + screen);
   }
   const yawCorrection = normalizeAngleRad(desiredYaw - rawYaw);
   q = qMul(qAxis(0,1,0,yawCorrection), q);
   q.normalize();
 
-  // Match the physical phone directions to the world camera conventions used by
-  // this project. Preserve yaw and roll, but mirror pitch around the camera's
-  // current RIGHT axis. Positive/negative here was verified against the iPhone
-  // test posture: top edge away => look down; top edge toward => look up.
-  const measuredPitch = pitchFromQuaternion(q);
-  if (Math.abs(measuredPitch) > 1e-6) {
-    const rightAxis = qRotateVector(q, new BABYLON.Vector3(1, 0, 0)).normalize();
-    q = qMul(qAxis(rightAxis.x, rightAxis.y, rightAxis.z, 2 * measuredPitch), q);
+  // PHYSICAL HOLDING POSTURE normalization.  The baseline is a discrete local
+  // roll (portrait=0, sideways=+/-90, inverted=180).  Right-multiplying applies
+  // the correction in CAMERA-LOCAL space, so forward/yaw are preserved while a
+  // preferred sideways holding posture becomes the new neutral roll.
+  const baseRoll = postureBaseRollRad(postureBase);
+  if (Math.abs(baseRoll) > 1e-6) {
+    q = qMul(q, qAxis(0,0,1,-baseRoll));
     q.normalize();
   }
 
-  camera.rotationQuaternion = q.clone();
+  camera.rotationQuaternion = q;
+  camera.rotation.set(0, 0, 0);
 
   localYawRad = yawFromQuaternion(q);
   localPitchRad = pitchFromQuaternion(q);
   localRollRad = rollFromQuaternion(q);
-  motionStats.lastAppliedAt = Date.now();
-  motionStats.lastScreenAngleDeg = screenAngleDeg;
 }
 
 function handleDeviceOrientation(ev) {
-  const now = Date.now();
-  motionStats.orientationEventCount += 1;
-  motionStats.lastOrientationEventAt = now;
-  const compassHeadingDeg = Number.isFinite(ev.webkitCompassHeading) ? ev.webkitCompassHeading : null;
-  if (Number.isFinite(compassHeadingDeg)) {
-    motionStats.lastCompassAt = now;
-    motionStats.lastCompassHeadingDeg = compassHeadingDeg;
-  }
-  latestDeviceOrientation = {
-    alpha: Number.isFinite(ev.alpha) ? ev.alpha : null,
-    beta: Number.isFinite(ev.beta) ? ev.beta : null,
-    gamma: Number.isFinite(ev.gamma) ? ev.gamma : null,
-    compassHeadingDeg
-  };
   if (!motionEnabled) return;
+  const compassHeadingDeg = Number.isFinite(ev.webkitCompassHeading) ? ev.webkitCompassHeading : null;
   applyDeviceOrientation(ev.alpha, ev.beta, ev.gamma, compassHeadingDeg);
 }
 // Use ONE orientation stream. iOS exposes compass heading on deviceorientation;
 // listening to deviceorientationabsolute as well caused competing updates.
 window.addEventListener("deviceorientation", handleDeviceOrientation, true);
-
-function handleScreenOrientationChange() {
-  motionStats.screenChangeCount += 1;
-  motionStats.lastScreenChangeAt = Date.now();
-  motionStats.lastScreenAngleDeg = getScreenAngleDeg();
-  // Redraw Babylon immediately for the new viewport dimensions.
-  engine.resize();
-  // If the browser rotates while the phone is otherwise still, there may be a
-  // short delay before the next sensor event. Re-apply the last known physical
-  // attitude using the NEW screen angle so camera and UI stay in sync.
-  if (motionEnabled && latestDeviceOrientation &&
-      Number.isFinite(latestDeviceOrientation.alpha) &&
-      Number.isFinite(latestDeviceOrientation.beta) &&
-      Number.isFinite(latestDeviceOrientation.gamma)) {
-    applyDeviceOrientation(
-      latestDeviceOrientation.alpha,
-      latestDeviceOrientation.beta,
-      latestDeviceOrientation.gamma,
-      latestDeviceOrientation.compassHeadingDeg
-    );
-  }
-}
-
-if (screen.orientation && typeof screen.orientation.addEventListener === "function") {
-  screen.orientation.addEventListener("change", handleScreenOrientationChange);
-}
-window.addEventListener("orientationchange", handleScreenOrientationChange, true);
 
 function applyHeadingStabilization() {
   if (!lockNorth) {
@@ -489,9 +500,12 @@ function initMotionLabOnce() {
     camera,
     getComputedState: () => ({
       localYawRad, localPitchRad, localRollRad, motionEnabled,
-      motionStats: { ...motionStats },
-      screenAngleDeg: getScreenAngleDeg()
+      physicalPosture, physicalPostureConfidence, postureCandidate, postureCandidateSince,
+      postureBase, postureAutoNormalize, postureBaseChangedAt, lastOrientationEventAt,
+      baseRollRad: postureBaseRollRad(postureBase), view: getViewFrameInfo()
     }),
+    setAutoNormalize: setPostureAutoNormalize,
+    adoptCurrentPosture: adoptCurrentPhysicalPosture,
     onStatus: (msg) => setStatus(msg)
   });
   window.__motionLab = motionLab;
