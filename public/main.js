@@ -318,22 +318,22 @@ function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg =
   const rawYaw = yawFromQuaternion(q);
   let desiredYaw = rawYaw;
   if (Number.isFinite(compassHeadingDeg)) {
-    desiredYaw = normalizeAngleRad(-BABYLON.Angle.FromDegrees(compassHeadingDeg).radians() + screen);
+    desiredYaw = normalizeAngleRad(BABYLON.Angle.FromDegrees(compassHeadingDeg).radians() - screen);
   } else if (Number.isFinite(lastGeoHeadingRad)) {
-    desiredYaw = normalizeAngleRad(lastGeoHeadingRad + screen);
+    desiredYaw = normalizeAngleRad(-lastGeoHeadingRad - screen);
   }
   const yawCorrection = normalizeAngleRad(desiredYaw - rawYaw);
   q = qMul(qAxis(0,1,0,yawCorrection), q);
   q.normalize();
 
-  // The iPhone's physical pitch direction is opposite Babylon's camera pitch
-  // convention for our "phone held upright, screen facing user" posture.
-  // Preserve yaw and roll, but mirror pitch by rotating about the camera's
-  // current RIGHT axis by twice the measured pitch in the opposite direction.
+  // Match the physical phone directions to the world camera conventions used by
+  // this project. Preserve yaw and roll, but mirror pitch around the camera's
+  // current RIGHT axis. Positive/negative here was verified against the iPhone
+  // test posture: top edge away => look down; top edge toward => look up.
   const measuredPitch = pitchFromQuaternion(q);
   if (Math.abs(measuredPitch) > 1e-6) {
     const rightAxis = qRotateVector(q, new BABYLON.Vector3(1, 0, 0)).normalize();
-    q = qMul(qAxis(rightAxis.x, rightAxis.y, rightAxis.z, -2 * measuredPitch), q);
+    q = qMul(qAxis(rightAxis.x, rightAxis.y, rightAxis.z, 2 * measuredPitch), q);
     q.normalize();
   }
 
