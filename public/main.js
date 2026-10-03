@@ -54,6 +54,29 @@ let lockNorth = false;
 let yawZero = 0;
 let yawSmoothed = 0;
 let motionEnabled = false;
+
+// Motion/orientation diagnostics. Keep the working camera transform independent
+// from UI orientation, while retaining enough state to re-apply it immediately
+// when iOS/Android rotates the browser viewport.
+let latestDeviceOrientation = null;
+const motionStats = {
+  orientationEventCount: 0,
+  lastOrientationEventAt: 0,
+  lastCompassAt: 0,
+  lastCompassHeadingDeg: null,
+  lastAppliedAt: 0,
+  screenChangeCount: 0,
+  lastScreenChangeAt: 0,
+  lastScreenAngleDeg: 0
+};
+
+function getScreenAngleDeg() {
+  const a = (screen.orientation && Number.isFinite(screen.orientation.angle))
+    ? screen.orientation.angle
+    : (typeof window.orientation === "number" ? window.orientation : 0);
+  // Normalize the common 0/90/180/270 representation.
+  return ((Number(a) % 360) + 360) % 360;
+}
 let localYawRad = 0;
 let localPitchRad = 0;
 let localRollRad = 0;
@@ -298,7 +321,7 @@ function rollFromQuaternion(q) {
 function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg = null) {
   if (!Number.isFinite(alphaDeg) || !Number.isFinite(betaDeg) || !Number.isFinite(gammaDeg)) return;
 
-  const screenAngleDeg = (typeof window.orientation === "number") ? window.orientation : (screen.orientation?.angle || 0);
+  const screenAngleDeg = getScreenAngleDeg();
   const alpha = BABYLON.Angle.FromDegrees(alphaDeg).radians();
   const beta = BABYLON.Angle.FromDegrees(betaDeg).radians();
   const gamma = BABYLON.Angle.FromDegrees(gammaDeg).radians();
@@ -342,16 +365,58 @@ function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg =
   localYawRad = yawFromQuaternion(q);
   localPitchRad = pitchFromQuaternion(q);
   localRollRad = rollFromQuaternion(q);
+  motionStats.lastAppliedAt = Date.now();
+  motionStats.lastScreenAngleDeg = screenAngleDeg;
 }
 
 function handleDeviceOrientation(ev) {
-  if (!motionEnabled) return;
+  const now = Date.now();
+  motionStats.orientationEventCount += 1;
+  motionStats.lastOrientationEventAt = now;
   const compassHeadingDeg = Number.isFinite(ev.webkitCompassHeading) ? ev.webkitCompassHeading : null;
+  if (Number.isFinite(compassHeadingDeg)) {
+    motionStats.lastCompassAt = now;
+    motionStats.lastCompassHeadingDeg = compassHeadingDeg;
+  }
+  latestDeviceOrientation = {
+    alpha: Number.isFinite(ev.alpha) ? ev.alpha : null,
+    beta: Number.isFinite(ev.beta) ? ev.beta : null,
+    gamma: Number.isFinite(ev.gamma) ? ev.gamma : null,
+    compassHeadingDeg
+  };
+  if (!motionEnabled) return;
   applyDeviceOrientation(ev.alpha, ev.beta, ev.gamma, compassHeadingDeg);
 }
 // Use ONE orientation stream. iOS exposes compass heading on deviceorientation;
 // listening to deviceorientationabsolute as well caused competing updates.
 window.addEventListener("deviceorientation", handleDeviceOrientation, true);
+
+function handleScreenOrientationChange() {
+  motionStats.screenChangeCount += 1;
+  motionStats.lastScreenChangeAt = Date.now();
+  motionStats.lastScreenAngleDeg = getScreenAngleDeg();
+  // Redraw Babylon immediately for the new viewport dimensions.
+  engine.resize();
+  // If the browser rotates while the phone is otherwise still, there may be a
+  // short delay before the next sensor event. Re-apply the last known physical
+  // attitude using the NEW screen angle so camera and UI stay in sync.
+  if (motionEnabled && latestDeviceOrientation &&
+      Number.isFinite(latestDeviceOrientation.alpha) &&
+      Number.isFinite(latestDeviceOrientation.beta) &&
+      Number.isFinite(latestDeviceOrientation.gamma)) {
+    applyDeviceOrientation(
+      latestDeviceOrientation.alpha,
+      latestDeviceOrientation.beta,
+      latestDeviceOrientation.gamma,
+      latestDeviceOrientation.compassHeadingDeg
+    );
+  }
+}
+
+if (screen.orientation && typeof screen.orientation.addEventListener === "function") {
+  screen.orientation.addEventListener("change", handleScreenOrientationChange);
+}
+window.addEventListener("orientationchange", handleScreenOrientationChange, true);
 
 function applyHeadingStabilization() {
   if (!lockNorth) {
@@ -422,7 +487,11 @@ function initMotionLabOnce() {
   if (motionLab) return motionLab;
   motionLab = createMotionLab({
     camera,
-    getComputedState: () => ({ localYawRad, localPitchRad, localRollRad, motionEnabled }),
+    getComputedState: () => ({
+      localYawRad, localPitchRad, localRollRad, motionEnabled,
+      motionStats: { ...motionStats },
+      screenAngleDeg: getScreenAngleDeg()
+    }),
     onStatus: (msg) => setStatus(msg)
   });
   window.__motionLab = motionLab;
