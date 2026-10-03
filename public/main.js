@@ -260,8 +260,20 @@ function qMul(a, b) {
   );
 }
 function qRotateVector(q, v) {
-  const m = BABYLON.Matrix.FromQuaternion(q);
-  return BABYLON.Vector3.TransformNormal(v, m);
+  // Rotate a vector directly by quaternion (q * v * q^-1).
+  // Avoid Matrix.FromQuaternion here: it is not available in every Babylon build/CDN version.
+  const qx = q.x, qy = q.y, qz = q.z, qw = q.w;
+  const vx = v.x, vy = v.y, vz = v.z;
+
+  const tx = 2 * (qy * vz - qz * vy);
+  const ty = 2 * (qz * vx - qx * vz);
+  const tz = 2 * (qx * vy - qy * vx);
+
+  return new BABYLON.Vector3(
+    vx + qw * tx + (qy * tz - qz * ty),
+    vy + qw * ty + (qz * tx - qx * tz),
+    vz + qw * tz + (qx * ty - qy * tx)
+  );
 }
 function yawFromQuaternion(q) {
   const f = qRotateVector(q, new BABYLON.Vector3(0, 0, 1));
@@ -314,8 +326,7 @@ function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg =
   q = qMul(qAxis(0,1,0,yawCorrection), q);
   q.normalize();
 
-  camera.rotationQuaternion = q;
-  camera.rotation.set(0, 0, 0);
+  camera.rotationQuaternion = q.clone();
 
   localYawRad = yawFromQuaternion(q);
   localPitchRad = pitchFromQuaternion(q);
