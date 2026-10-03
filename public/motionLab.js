@@ -210,11 +210,11 @@ export function createMotionLab({
     const appliedAge = nowAge(c.lastOrientationEventAt);
 
     readout.textContent =
-`MOTION LAB SYMBOLIC v1   last mark: ${last}   marks: ${poses.length}\n` +
-`MODE simple portrait motion / roll ignored / symbolic beacons\n` +
+`MOTION LAB RECOVERY v1   last mark: ${last}   marks: ${poses.length}\n` +
+`MODE quaternion-derived pitch / compass yaw / roll ignored\n` +
 `VIEW ${s.viewport} ${s.width}x${s.height}   screen ${s.type} @ ${n(s.angle,0)}°\n` +
 `PHYS ${c.physicalPosture || 'unknown'} conf ${n(c.physicalPostureConfidence,2)}   ${mismatch}\n` +
-`INPUT ${c.motionInputStatus || 'waiting'}   yaw source ${c.motionYawSource || 'none'}   pitch zero ${n(c.pitchZeroDeg)}°\n` +
+`INPUT ${c.motionInputStatus || 'waiting'}   yaw source ${c.motionYawSource || 'none'}\n` +
 `RAW alpha ${n(raw.alpha)}°   beta ${n(raw.beta)}°   gamma ${n(raw.gamma)}°\n` +
 `compass ${n(raw.compass)}°   accuracy ${n(raw.compassAccuracy)}   absolute ${String(raw.absolute ?? '—')}\n` +
 `FRESH orient ${Number.isFinite(orientAge)?orientAge+'ms':'—'}   applied ${Number.isFinite(appliedAge)?appliedAge+'ms':'—'}   count ${orientCount}   screen changes ${screenChanges}\n` +
@@ -222,7 +222,7 @@ export function createMotionLab({
 `OWNER ${c.cameraControlMode || 'unknown'}   quaternion ${camera.rotationQuaternion ? 'ACTIVE' : 'NONE'}\n` +
 `CAM(q) x ${n(deg(qe?.x))}°   y ${n(deg(qe?.y))}°   z ${n(deg(qe?.z))}°\n` +
 `UP  [${vec(basis?.up)}]   FWD [${vec(basis?.forward)}]\n` +
-`SYMBOLS: GOLD sphere = UP (+6m); CYAN ring/triangle = ME/DOWN (-2.05m)\n` +
+`SYMBOLS: GOLD sphere = UP (+6m); CYAN sphere = DOWN (-6m); ring/triangle = ME (-2.05m)\n` +
 `Expected: RIGHT → view RIGHT; LEFT → LEFT; top edge TOWARD → look UP; AWAY → look DOWN. If a beacon is absent, the camera did not reach that direction.`;
     drawAxes(basis);
   }

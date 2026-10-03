@@ -8,7 +8,7 @@ const canvas = document.getElementById("renderCanvas");
 const statusEl = document.getElementById("status");
 
 const { engine, scene } = initScene(canvas);
-// Symbolic Calibration v1: v3.5 simple portrait motion + explicit UP/DOWN beacons.
+// Recovery Calibration v1: full device quaternion for pitch + compass yaw + roll ignored.
 const camera = initCamera(scene, canvas);
 camera.position.y = 2.4;
 
@@ -69,6 +69,23 @@ symbolicUp.material = symbolicUpMat;
 symbolicUp.parent = symbolicRoot;
 symbolicUp.position.set(0, 6.0, 0);
 symbolicUp.isPickable = false;
+
+// Exact opposite of the gold sphere: an unmistakable cyan sphere below the
+// camera.  This avoids any ambiguity about whether a flat ground marker is
+// edge-on, occluded, or simply outside the frustum.
+const symbolicDownSphere = BABYLON.MeshBuilder.CreateSphere(
+  "symbolicDownCyan",
+  { diameter: 1.5, segments: 24 },
+  scene
+);
+const symbolicDownSphereMat = new BABYLON.StandardMaterial("symbolicDownCyanMat", scene);
+symbolicDownSphereMat.diffuseColor = BABYLON.Color3.FromHexString("#22D3EE");
+symbolicDownSphereMat.emissiveColor = BABYLON.Color3.FromHexString("#0891B2").scale(0.95);
+symbolicDownSphereMat.specularColor = BABYLON.Color3.Black();
+symbolicDownSphere.material = symbolicDownSphereMat;
+symbolicDownSphere.parent = symbolicRoot;
+symbolicDownSphere.position.set(0, -6.0, 0);
+symbolicDownSphere.isPickable = false;
 
 // A bright ring + triangular center directly below the camera. This is a local
 // "ME / DOWN" diagnostic, independent of the network player mesh.
@@ -453,61 +470,58 @@ function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg =
 
   const now = Date.now();
   lastOrientationEventAt = now;
+  lastBetaDeg = betaDeg;
 
-  // PORTRAIT MOTION MODE (v3.5): classify posture for diagnostics, but never
-  // let a transient posture classification freeze the camera.  That old gate
-  // was the reason a downward tilt could get stuck at the previous pitch.
+  // Keep posture classification for diagnostics only.  It does NOT gate or
+  // remap the camera in this recovery build.
   const classified = classifyPhysicalPosture(betaDeg, gammaDeg);
   physicalPosture = classified.posture;
   physicalPostureConfidence = classified.confidence;
-  lastBetaDeg = betaDeg;
+  motionInputStatus = "full quaternion pitch";
 
-  // Establish a neutral pitch from the first sensor sample after Motion is
-  // enabled.  This removes the small eye-level bias from holding the phone at
-  // 86-96 degrees instead of exactly 90 degrees.
-  if (!Number.isFinite(pitchZeroDeg)) pitchZeroDeg = betaDeg;
+  const screenAngleDeg = (typeof window.orientation === "number")
+    ? window.orientation
+    : (screen.orientation?.angle || 0);
+  const alpha = BABYLON.Angle.FromDegrees(alphaDeg).radians();
+  const beta = BABYLON.Angle.FromDegrees(betaDeg).radians();
+  const gamma = BABYLON.Angle.FromDegrees(gammaDeg).radians();
+  const screen = BABYLON.Angle.FromDegrees(screenAngleDeg || 0).radians();
 
-  const portraitLike = physicalPosture === "portrait" || physicalPostureConfidence < 0.35;
-  motionInputStatus = portraitLike ? "active portrait" : `yaw-only (${physicalPosture})`;
+  // Reconstruct the physical phone attitude first.  This is the pre-v3 basis
+  // that behaved well before physical-posture auto-normalization was added.
+  // DeviceOrientation order: alpha(Z-ish world heading), beta(X), gamma(Y),
+  // followed by the phone-camera correction and current browser screen angle.
+  let sensorQ = qMul(qAxis(0,1,0,alpha), qAxis(1,0,0,beta));
+  sensorQ = qMul(sensorQ, qAxis(0,0,1,-gamma));
+  sensorQ = qMul(sensorQ, qAxis(1,0,0,-Math.PI / 2));
+  sensorQ = qMul(sensorQ, qAxis(0,0,1,-screen));
+  sensorQ.normalize();
 
-  // YAW: positive compass heading produces positive Babylon yaw.  This makes
-  // a physical turn to the right move the view to the right (and vice versa).
-  // webkitCompassHeading is preferred on iPhone; alpha is the Android/general
-  // fallback and can be calibrated later if a particular browser reports the
-  // opposite convention.
+  // Derive PITCH from the complete quaternion/forward vector, not directly
+  // from beta. This survives DeviceOrientation Euler branch changes. The
+  // project convention needs the sign mirrored: top edge toward user => UP,
+  // top edge away => DOWN.
+  const measuredPitch = pitchFromQuaternion(sensorQ);
+  const limit = Math.PI / 2 - BABYLON.Angle.FromDegrees(1.5).radians();
+  const pitch = BABYLON.Scalar.Clamp(-measuredPitch, -limit, limit);
+
+  // YAW is anchored to iPhone compass heading when available.  Roll is
+  // intentionally zero in this recovery build so false gamma/Euler roll cannot
+  // tilt the horizon while we validate up/down.
   let headingDeg;
   if (Number.isFinite(compassHeadingDeg)) {
-    headingDeg = compassHeadingDeg;
+    headingDeg = compassHeadingDeg - (screenAngleDeg || 0);
     motionYawSource = "compass";
   } else {
-    headingDeg = alphaDeg;
+    headingDeg = alphaDeg - (screenAngleDeg || 0);
     motionYawSource = "alpha";
   }
   const yaw = normalizeAngleRad(BABYLON.Angle.FromDegrees(headingDeg).radians());
-
-  // PITCH: use beta relative to the neutral value captured when Motion was
-  // enabled.  Top edge toward the user raises beta (look up); away lowers beta
-  // (look down).  Permit almost the full +/-90 degrees so straight-down viewing
-  // is reachable.  When the phone is physically sideways, hold the last pitch
-  // instead of feeding the portrait beta axis into the camera.
-  let pitch = localPitchRad;
-  if (portraitLike) {
-    const pitchDeg = normalizeAngleDeg(betaDeg - pitchZeroDeg);
-    const limit = Math.PI / 2 - BABYLON.Angle.FromDegrees(1.5).radians();
-    pitch = BABYLON.Scalar.Clamp(BABYLON.Angle.FromDegrees(pitchDeg).radians(), -limit, limit);
-  }
-
-  // Roll is intentionally ignored in simple mode.  Raw gamma near an upright
-  // phone is an Euler singularity and was the source of the false horizon tilt.
-  // If we later want deliberate roll as a game input, it can be a separate mode.
   const roll = 0;
 
-  // Build a camera quaternion directly from the three game-space quantities.
-  // qAxis(X,-pitch) is used because camera-forward +Z rotated around +X points
-  // downward; negating gives positive pitch == look upward.
-  let q = qMul(qAxis(0,1,0,yaw), qAxis(1,0,0,-pitch));
-  q.normalize();
-  camera.rotationQuaternion = q;
+  let cameraQ = qMul(qAxis(0,1,0,yaw), qAxis(1,0,0,-pitch));
+  cameraQ.normalize();
+  camera.rotationQuaternion = cameraQ;
 
   localYawRad = yaw;
   localPitchRad = pitch;
@@ -596,7 +610,7 @@ function initMotionLabOnce() {
       localYawRad, localPitchRad, localRollRad, motionEnabled,
       physicalPosture, physicalPostureConfidence, postureCandidate, postureCandidateSince,
       postureBase, postureAutoNormalize, postureBaseChangedAt, lastOrientationEventAt,
-      motionInputStatus, motionYawSource, pitchZeroDeg, lastBetaDeg, simpleMotionMode: true,
+      motionInputStatus, motionYawSource, pitchZeroDeg: null, lastBetaDeg, simpleMotionMode: false, recoveryQuaternionPitch: true,
       cameraControlMode: motionEnabled ? "motion" : ((gestureLab && gestureLab.isEnabled && gestureLab.isEnabled()) ? "gesture" : "pointer"),
       baseRollRad: 0, view: getViewFrameInfo()
     }),
@@ -805,7 +819,7 @@ function createDrawerUI() {
 
     const ok = await requestDevicePermissions();
     motionEnabled = !!ok;
-    pitchZeroDeg = null;
+    pitchZeroDeg = null; // unused in recovery quaternion-pitch mode
     btn.textBlock.text = ok ? "Motion Enabled (tap to disable)" : "Motion Blocked";
     if (!ok) return;
 
