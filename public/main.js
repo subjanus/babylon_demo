@@ -239,36 +239,87 @@ function maybeSendOrientationUpdate() {
   socket.emit("orientationUpdate", { yaw });
 }
 function updateLocalHorizon() {
-  const yaw = getCameraYawRad();
-  const cameraRoll = camera.rotation?.z || 0;
   horizonRoot.position.set(camera.position.x, camera.position.y - 2.15, camera.position.z);
-  // Keep the helper horizon level on screen even when the phone rolls.
-  horizonRoot.rotation.set(0, -yaw, -cameraRoll);
+  // This ring represents a true world-horizontal plane.  Do not counter-rotate it
+  // against camera Euler angles; the quaternion camera transform should decide how
+  // the real horizon appears on screen.
+  horizonRoot.rotationQuaternion = null;
+  horizonRoot.rotation.set(0, 0, 0);
+}
+
+function qAxis(x, y, z, angle) {
+  const h = angle * 0.5, s = Math.sin(h);
+  return new BABYLON.Quaternion(x * s, y * s, z * s, Math.cos(h));
+}
+function qMul(a, b) {
+  return new BABYLON.Quaternion(
+    a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
+    a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
+    a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
+    a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z
+  );
+}
+function qRotateVector(q, v) {
+  const m = BABYLON.Matrix.FromQuaternion(q);
+  return BABYLON.Vector3.TransformNormal(v, m);
+}
+function yawFromQuaternion(q) {
+  const f = qRotateVector(q, new BABYLON.Vector3(0, 0, 1));
+  return normalizeAngleRad(Math.atan2(f.x, f.z));
+}
+function pitchFromQuaternion(q) {
+  const f = qRotateVector(q, new BABYLON.Vector3(0, 0, 1));
+  return Math.asin(BABYLON.Scalar.Clamp(f.y, -1, 1));
+}
+function rollFromQuaternion(q) {
+  // Measure camera up against the no-roll up vector at the same yaw/pitch.
+  const f = qRotateVector(q, new BABYLON.Vector3(0, 0, 1)).normalize();
+  const u = qRotateVector(q, new BABYLON.Vector3(0, 1, 0)).normalize();
+  const worldUp = new BABYLON.Vector3(0, 1, 0);
+  let right = BABYLON.Vector3.Cross(worldUp, f);
+  if (right.lengthSquared() < 1e-8) return 0;
+  right.normalize();
+  const noRollUp = BABYLON.Vector3.Cross(f, right).normalize();
+  return Math.atan2(BABYLON.Vector3.Dot(u, right), BABYLON.Vector3.Dot(u, noRollUp));
 }
 
 function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg = null) {
+  if (!Number.isFinite(alphaDeg) || !Number.isFinite(betaDeg) || !Number.isFinite(gammaDeg)) return;
+
   const screenAngleDeg = (typeof window.orientation === "number") ? window.orientation : (screen.orientation?.angle || 0);
-  const alpha = BABYLON.Angle.FromDegrees(alphaDeg || 0).radians();
-  const beta = BABYLON.Angle.FromDegrees(betaDeg || 0).radians();
-  const gamma = BABYLON.Angle.FromDegrees(gammaDeg || 0).radians();
+  const alpha = BABYLON.Angle.FromDegrees(alphaDeg).radians();
+  const beta = BABYLON.Angle.FromDegrees(betaDeg).radians();
+  const gamma = BABYLON.Angle.FromDegrees(gammaDeg).radians();
   const screen = BABYLON.Angle.FromDegrees(screenAngleDeg || 0).radians();
 
-  // On iPhone Safari, webkitCompassHeading is often the most reliable yaw source.
-  // It is degrees clockwise from north, so convert to our Babylon yaw convention.
+  // DeviceOrientation Euler order Y-X-Z, followed by the conventional phone
+  // camera correction (-90° about X) and screen-orientation correction.
+  let q = qMul(qAxis(0,1,0,alpha), qAxis(1,0,0,beta));
+  q = qMul(q, qAxis(0,0,1,-gamma));
+  q = qMul(q, qAxis(1,0,0,-Math.PI / 2));
+  q = qMul(q, qAxis(0,0,1,-screen));
+  q.normalize();
+
+  // alpha is unstable as a compass reference on iOS.  Preserve the full
+  // quaternion attitude but rotate it around WORLD Y so its horizontal heading
+  // agrees with webkitCompassHeading when available.
+  const rawYaw = yawFromQuaternion(q);
+  let desiredYaw = rawYaw;
   if (Number.isFinite(compassHeadingDeg)) {
-    localYawRad = normalizeAngleRad(-BABYLON.Angle.FromDegrees(compassHeadingDeg).radians() + screen);
-  } else if (Number.isFinite(alphaDeg)) {
-    localYawRad = normalizeAngleRad(alpha + screen);
+    desiredYaw = normalizeAngleRad(-BABYLON.Angle.FromDegrees(compassHeadingDeg).radians() + screen);
   } else if (Number.isFinite(lastGeoHeadingRad)) {
-    localYawRad = lastGeoHeadingRad;
+    desiredYaw = normalizeAngleRad(lastGeoHeadingRad + screen);
   }
+  const yawCorrection = normalizeAngleRad(desiredYaw - rawYaw);
+  q = qMul(qAxis(0,1,0,yawCorrection), q);
+  q.normalize();
 
-  localPitchRad = BABYLON.Scalar.Clamp(beta - Math.PI / 2, -1.35, 1.35);
-  localRollRad = BABYLON.Scalar.Clamp(gamma, -1.35, 1.35);
+  camera.rotationQuaternion = q;
+  camera.rotation.set(0, 0, 0);
 
-  camera.rotation.x = -localPitchRad;
-  camera.rotation.y = localYawRad;
-  camera.rotation.z = -localRollRad * 0.35;
+  localYawRad = yawFromQuaternion(q);
+  localPitchRad = pitchFromQuaternion(q);
+  localRollRad = rollFromQuaternion(q);
 }
 
 function handleDeviceOrientation(ev) {
@@ -276,8 +327,9 @@ function handleDeviceOrientation(ev) {
   const compassHeadingDeg = Number.isFinite(ev.webkitCompassHeading) ? ev.webkitCompassHeading : null;
   applyDeviceOrientation(ev.alpha, ev.beta, ev.gamma, compassHeadingDeg);
 }
+// Use ONE orientation stream. iOS exposes compass heading on deviceorientation;
+// listening to deviceorientationabsolute as well caused competing updates.
 window.addEventListener("deviceorientation", handleDeviceOrientation, true);
-window.addEventListener("deviceorientationabsolute", handleDeviceOrientation, true);
 
 function applyHeadingStabilization() {
   if (!lockNorth) {

@@ -1,4 +1,4 @@
-// Motion Lab v1: screenshot-friendly device orientation diagnostic.
+// Motion Lab v2: quaternion-aware screenshot-friendly orientation diagnostic.
 // Client-only. Does not alter camera behavior; it observes raw sensor values
 // and the camera transform so we can diagnose yaw/pitch/roll cross-coupling.
 
@@ -61,8 +61,9 @@ export function createMotionLab({ camera, getComputedState = () => ({}), onStatu
 
   function cameraBasis() {
     try {
-      const r = camera.rotation || { x: 0, y: 0, z: 0 };
-      const m = BABYLON.Matrix.RotationYawPitchRoll(r.y || 0, r.x || 0, r.z || 0);
+      const m = camera.rotationQuaternion
+        ? BABYLON.Matrix.FromQuaternion(camera.rotationQuaternion)
+        : BABYLON.Matrix.RotationYawPitchRoll(camera.rotation?.y || 0, camera.rotation?.x || 0, camera.rotation?.z || 0);
       const right = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(1,0,0), m).normalize();
       const up = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0,1,0), m).normalize();
       const forward = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0,0,1), m).normalize();
@@ -101,6 +102,7 @@ export function createMotionLab({ camera, getComputedState = () => ({}), onStatu
     const c = getComputedState() || {};
     const basis = cameraBasis();
     const r = camera.rotation || {};
+    const qe = camera.rotationQuaternion ? camera.rotationQuaternion.toEulerAngles() : null;
     return {
       label: label || `P${poseNo + 1}`,
       t: Date.now(),
@@ -109,7 +111,8 @@ export function createMotionLab({ camera, getComputedState = () => ({}), onStatu
         yawDeg: deg(c.localYawRad), pitchDeg: deg(c.localPitchRad), rollDeg: deg(c.localRollRad),
         motionEnabled: !!c.motionEnabled
       },
-      cameraDeg: { x: deg(r.x || 0), y: deg(r.y || 0), z: deg(r.z || 0) },
+      cameraDeg: qe ? { x: deg(qe.x), y: deg(qe.y), z: deg(qe.z) } : { x: deg(r.x || 0), y: deg(r.y || 0), z: deg(r.z || 0) },
+      quaternion: camera.rotationQuaternion ? { x:camera.rotationQuaternion.x, y:camera.rotationQuaternion.y, z:camera.rotationQuaternion.z, w:camera.rotationQuaternion.w } : null,
       basis: basis ? {
         right: { x:basis.right.x, y:basis.right.y, z:basis.right.z },
         up: { x:basis.up.x, y:basis.up.y, z:basis.up.z },
@@ -152,15 +155,17 @@ export function createMotionLab({ camera, getComputedState = () => ({}), onStatu
     const s = screenInfo();
     const c = getComputedState() || {};
     const r = camera.rotation || {};
+    const qe = camera.rotationQuaternion ? camera.rotationQuaternion.toEulerAngles() : null;
     const basis = cameraBasis();
     const last = poses.length ? poses[poses.length - 1].label : 'none';
     readout.textContent =
-`MOTION LAB v1   last mark: ${last}   marks: ${poses.length}\n` +
+`MOTION LAB v2   last mark: ${last}   marks: ${poses.length}\n` +
 `RAW alpha ${n(raw.alpha)}°   beta ${n(raw.beta)}°   gamma ${n(raw.gamma)}°\n` +
 `compass ${n(raw.compass)}°   accuracy ${n(raw.compassAccuracy)}   absolute ${String(raw.absolute ?? '—')}\n` +
 `screen ${s.type} @ ${n(s.angle,0)}°   event ${raw.eventType || '—'}\n` +
 `CALC yaw ${n(deg(c.localYawRad))}°   pitch ${n(deg(c.localPitchRad))}°   roll ${n(deg(c.localRollRad))}°   motion ${c.motionEnabled ? 'ON':'OFF'}\n` +
-`CAM  x ${n(deg(r.x || 0))}°   y ${n(deg(r.y || 0))}°   z ${n(deg(r.z || 0))}°\n` +
+`CAM(q) x ${n(deg(qe?.x))}°   y ${n(deg(qe?.y))}°   z ${n(deg(qe?.z))}°\n` +
+`QUAT [${n(camera.rotationQuaternion?.x,3)}, ${n(camera.rotationQuaternion?.y,3)}, ${n(camera.rotationQuaternion?.z,3)}, ${n(camera.rotationQuaternion?.w,3)}]\n` +
 `UP   [${vec(basis?.up)}]\n` +
 `FWD  [${vec(basis?.forward)}]\n` +
 `Test: upright ahead → 45°L → 90°L → ahead → 45°R → 90°R; then pitch and roll separately.`;
@@ -183,8 +188,7 @@ export function createMotionLab({ camera, getComputedState = () => ({}), onStatu
   }
 
   window.addEventListener('deviceorientation', onOrientation, true);
-  window.addEventListener('deviceorientationabsolute', onOrientation, true);
-
+  
   function setEnabled(on) {
     enabled = !!on;
     root.style.display = enabled ? 'block' : 'none';
