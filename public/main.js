@@ -72,6 +72,8 @@ let postureBaseChangedAt = 0;
 let lastOrientationEventAt = 0;
 let motionInputStatus = "waiting";
 let motionYawSource = "none";
+let pitchZeroDeg = null;
+let lastBetaDeg = null;
 const POSTURE_DWELL_MS = 850;
 
 let lastGeoHeadingRad = null;
@@ -242,6 +244,11 @@ function normalizeAngleRad(a) {
   while (a < -Math.PI) a += 2 * Math.PI;
   return a;
 }
+function normalizeAngleDeg(a) {
+  while (a > 180) a -= 360;
+  while (a < -180) a += 360;
+  return a;
+}
 function maybeSendOrientationUpdate() {
   if (!socket.connected) return;
   const now = Date.now();
@@ -392,22 +399,21 @@ function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg =
   const now = Date.now();
   lastOrientationEventAt = now;
 
-  // SIMPLE MOTION MODE (v3.3): classify the physical posture for diagnostics,
-  // but do not rotate the camera basis to compensate for portrait/landscape.
-  // The phone's own orientation lock is the reliable UI lock on iPhone.
+  // PORTRAIT MOTION MODE (v3.5): classify posture for diagnostics, but never
+  // let a transient posture classification freeze the camera.  That old gate
+  // was the reason a downward tilt could get stuck at the previous pitch.
   const classified = classifyPhysicalPosture(betaDeg, gammaDeg);
   physicalPosture = classified.posture;
   physicalPostureConfidence = classified.confidence;
+  lastBetaDeg = betaDeg;
 
-  // Keep motion deliberately portrait-first.  A sideways phone is a different
-  // control basis; rather than silently remap axes, pause camera updates until
-  // the device returns to its normal upright portrait posture.
-  if (physicalPosture !== "portrait" && physicalPostureConfidence >= 0.35) {
-    motionInputStatus = `paused (${physicalPosture})`;
-    return;
-  }
+  // Establish a neutral pitch from the first sensor sample after Motion is
+  // enabled.  This removes the small eye-level bias from holding the phone at
+  // 86-96 degrees instead of exactly 90 degrees.
+  if (!Number.isFinite(pitchZeroDeg)) pitchZeroDeg = betaDeg;
 
-  motionInputStatus = "active portrait";
+  const portraitLike = physicalPosture === "portrait" || physicalPostureConfidence < 0.35;
+  motionInputStatus = portraitLike ? "active portrait" : `yaw-only (${physicalPosture})`;
 
   // YAW: positive compass heading produces positive Babylon yaw.  This makes
   // a physical turn to the right move the view to the right (and vice versa).
@@ -424,14 +430,17 @@ function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg =
   }
   const yaw = normalizeAngleRad(BABYLON.Angle.FromDegrees(headingDeg).radians());
 
-  // PITCH: an upright portrait phone is beta ~= 90 degrees.  Tilting the TOP
-  // edge toward the user raises beta, so positive pitch means look upward.
-  // Tilting the top away lowers beta, producing negative pitch / look down.
-  const pitch = BABYLON.Scalar.Clamp(
-    BABYLON.Angle.FromDegrees(betaDeg - 90).radians(),
-    -1.35,
-    1.35
-  );
+  // PITCH: use beta relative to the neutral value captured when Motion was
+  // enabled.  Top edge toward the user raises beta (look up); away lowers beta
+  // (look down).  Permit almost the full +/-90 degrees so straight-down viewing
+  // is reachable.  When the phone is physically sideways, hold the last pitch
+  // instead of feeding the portrait beta axis into the camera.
+  let pitch = localPitchRad;
+  if (portraitLike) {
+    const pitchDeg = normalizeAngleDeg(betaDeg - pitchZeroDeg);
+    const limit = Math.PI / 2 - BABYLON.Angle.FromDegrees(1.5).radians();
+    pitch = BABYLON.Scalar.Clamp(BABYLON.Angle.FromDegrees(pitchDeg).radians(), -limit, limit);
+  }
 
   // Roll is intentionally ignored in simple mode.  Raw gamma near an upright
   // phone is an Euler singularity and was the source of the false horizon tilt.
@@ -532,7 +541,7 @@ function initMotionLabOnce() {
       localYawRad, localPitchRad, localRollRad, motionEnabled,
       physicalPosture, physicalPostureConfidence, postureCandidate, postureCandidateSince,
       postureBase, postureAutoNormalize, postureBaseChangedAt, lastOrientationEventAt,
-      motionInputStatus, motionYawSource, simpleMotionMode: true,
+      motionInputStatus, motionYawSource, pitchZeroDeg, lastBetaDeg, simpleMotionMode: true,
       cameraControlMode: motionEnabled ? "motion" : ((gestureLab && gestureLab.isEnabled && gestureLab.isEnabled()) ? "gesture" : "pointer"),
       baseRollRad: 0, view: getViewFrameInfo()
     }),
@@ -569,6 +578,7 @@ function syncCameraControlMode() {
 
 function disableMotionCamera() {
   motionEnabled = false;
+  pitchZeroDeg = null;
   // Preserve the current visual attitude when handing control back to Babylon's
   // pointer camera.  FreeCamera pointer inputs work naturally with Euler rotation.
   try {
@@ -740,6 +750,7 @@ function createDrawerUI() {
 
     const ok = await requestDevicePermissions();
     motionEnabled = !!ok;
+    pitchZeroDeg = null;
     btn.textBlock.text = ok ? "Motion Enabled (tap to disable)" : "Motion Blocked";
     if (!ok) return;
 

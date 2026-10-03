@@ -1,4 +1,4 @@
-// Motion Lab v3.3: simple portrait-motion diagnostic.
+// Motion Lab v3.5: calibrated portrait pitch diagnostic.
 // VIEW and PHYS are still displayed, but the camera no longer tries to auto-
 // normalize sideways holding postures. iPhone orientation lock owns the UI;
 // motion input is deliberately portrait-first, with roll ignored.
@@ -210,11 +210,11 @@ export function createMotionLab({
     const appliedAge = nowAge(c.lastOrientationEventAt);
 
     readout.textContent =
-`MOTION LAB v3.3 SIMPLE   last mark: ${last}   marks: ${poses.length}\n` +
-`MODE portrait-lock / roll ignored\n` +
+`MOTION LAB v3.5 PITCHFIX   last mark: ${last}   marks: ${poses.length}\n` +
+`MODE portrait-lock / calibrated pitch / roll ignored\n` +
 `VIEW ${s.viewport} ${s.width}x${s.height}   screen ${s.type} @ ${n(s.angle,0)}°\n` +
 `PHYS ${c.physicalPosture || 'unknown'} conf ${n(c.physicalPostureConfidence,2)}   ${mismatch}\n` +
-`INPUT ${c.motionInputStatus || 'waiting'}   yaw source ${c.motionYawSource || 'none'}\n` +
+`INPUT ${c.motionInputStatus || 'waiting'}   yaw source ${c.motionYawSource || 'none'}   pitch zero ${n(c.pitchZeroDeg)}°\n` +
 `RAW alpha ${n(raw.alpha)}°   beta ${n(raw.beta)}°   gamma ${n(raw.gamma)}°\n` +
 `compass ${n(raw.compass)}°   accuracy ${n(raw.compassAccuracy)}   absolute ${String(raw.absolute ?? '—')}\n` +
 `FRESH orient ${Number.isFinite(orientAge)?orientAge+'ms':'—'}   applied ${Number.isFinite(appliedAge)?appliedAge+'ms':'—'}   count ${orientCount}   screen changes ${screenChanges}\n` +
@@ -222,7 +222,7 @@ export function createMotionLab({
 `OWNER ${c.cameraControlMode || 'unknown'}   quaternion ${camera.rotationQuaternion ? 'ACTIVE' : 'NONE'}\n` +
 `CAM(q) x ${n(deg(qe?.x))}°   y ${n(deg(qe?.y))}°   z ${n(deg(qe?.z))}°\n` +
 `UP  [${vec(basis?.up)}]   FWD [${vec(basis?.forward)}]\n` +
-`Expected: turn phone RIGHT → view RIGHT; LEFT → LEFT; top edge TOWARD you → look UP; AWAY → look DOWN. Sideways posture pauses motion instead of remapping axes.`;
+`Expected: RIGHT → view RIGHT; LEFT → LEFT; top edge TOWARD → look UP; AWAY → look DOWN to nearly vertical. Sideways posture keeps yaw but holds pitch.`;
     drawAxes(basis);
   }
 
