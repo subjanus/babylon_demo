@@ -71,15 +71,35 @@ export function createMotionLab({
     return { type: so?.type || 'unknown', angle, viewport, width: innerWidth, height: innerHeight };
   }
 
+  function rotateByQ(q, v) {
+    const qx=q.x, qy=q.y, qz=q.z, qw=q.w;
+    const vx=v.x, vy=v.y, vz=v.z;
+    const tx=2*(qy*vz-qz*vy);
+    const ty=2*(qz*vx-qx*vz);
+    const tz=2*(qx*vy-qy*vx);
+    return new BABYLON.Vector3(
+      vx + qw*tx + (qy*tz-qz*ty),
+      vy + qw*ty + (qz*tx-qx*tz),
+      vz + qw*tz + (qx*ty-qy*tx)
+    );
+  }
+
   function cameraBasis() {
     try {
-      const m = camera.rotationQuaternion
-        ? BABYLON.Matrix.FromQuaternion(camera.rotationQuaternion)
-        : BABYLON.Matrix.RotationYawPitchRoll(camera.rotation?.y || 0, camera.rotation?.x || 0, camera.rotation?.z || 0);
-      const right = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(1,0,0), m).normalize();
-      const up = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0,1,0), m).normalize();
-      const forward = BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0,0,1), m).normalize();
-      return { right, up, forward };
+      if (camera.rotationQuaternion) {
+        const q = camera.rotationQuaternion;
+        return {
+          right: rotateByQ(q, new BABYLON.Vector3(1,0,0)).normalize(),
+          up: rotateByQ(q, new BABYLON.Vector3(0,1,0)).normalize(),
+          forward: rotateByQ(q, new BABYLON.Vector3(0,0,1)).normalize()
+        };
+      }
+      const m = BABYLON.Matrix.RotationYawPitchRoll(camera.rotation?.y || 0, camera.rotation?.x || 0, camera.rotation?.z || 0);
+      return {
+        right: BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(1,0,0), m).normalize(),
+        up: BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0,1,0), m).normalize(),
+        forward: BABYLON.Vector3.TransformNormal(new BABYLON.Vector3(0,0,1), m).normalize()
+      };
     } catch (_) { return null; }
   }
 
@@ -202,7 +222,7 @@ export function createMotionLab({
     autoButton.textContent = c.postureAutoNormalize ? 'Auto Basis: On' : 'Auto Basis: Off';
 
     readout.textContent =
-`MOTION LAB v3.1   last mark: ${last}   marks: ${poses.length}\n` +
+`MOTION LAB v3.2   last mark: ${last}   marks: ${poses.length}\n` +
 `VIEW ${s.viewport} ${s.width}x${s.height}   screen ${s.type} @ ${n(s.angle,0)}°\n` +
 `PHYS ${c.physicalPosture || 'unknown'} conf ${n(c.physicalPostureConfidence,2)}   ${mismatch}\n` +
 `BASE ${c.postureBase || 'unknown'} (${n(deg(c.baseRollRad),0)}°)   auto ${c.postureAutoNormalize ? 'ON':'OFF'}\n` +
