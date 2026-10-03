@@ -1,7 +1,7 @@
-// Motion Lab v3: physical-holding-posture + view-frame diagnostic.
-// Client-only.  The VIEW can remain portrait-locked while PHYS is sideways.
-// Motion Engine v3 can normalize the chosen physical holding posture as the
-// camera's neutral roll without confusing screen.orientation with device pose.
+// Motion Lab v3.3: simple portrait-motion diagnostic.
+// VIEW and PHYS are still displayed, but the camera no longer tries to auto-
+// normalize sideways holding postures. iPhone orientation lock owns the UI;
+// motion input is deliberately portrait-first, with roll ignored.
 
 export function createMotionLab({
   camera,
@@ -196,17 +196,6 @@ export function createMotionLab({
   button('Mark Pose', markPose);
   button('Copy Summary', copySummary);
   button('Reset Poses', reset);
-  const autoButton = button('Auto Basis: On', (b) => {
-    const c = getComputedState() || {};
-    const next = !c.postureAutoNormalize;
-    setAutoNormalize(next);
-    b.textContent = next ? 'Auto Basis: On' : 'Auto Basis: Off';
-    onStatus(next ? 'Physical posture auto-normalize enabled' : 'Physical posture basis frozen');
-  });
-  button('Adopt PHYS', () => {
-    const ok = adoptCurrentPosture();
-    onStatus(ok ? 'Adopted current physical posture as neutral' : 'No confident physical posture yet');
-  });
 
   function render() {
     if (!enabled) return;
@@ -219,14 +208,13 @@ export function createMotionLab({
     const mismatch = mismatchLabel(s, c.physicalPosture);
     const orientAge = nowAge(raw.at);
     const appliedAge = nowAge(c.lastOrientationEventAt);
-    autoButton.textContent = c.postureAutoNormalize ? 'Auto Basis: On' : 'Auto Basis: Off';
 
     readout.textContent =
-`MOTION LAB v3.2   last mark: ${last}   marks: ${poses.length}\n` +
+`MOTION LAB v3.3 SIMPLE   last mark: ${last}   marks: ${poses.length}\n` +
+`MODE portrait-lock / roll ignored\n` +
 `VIEW ${s.viewport} ${s.width}x${s.height}   screen ${s.type} @ ${n(s.angle,0)}°\n` +
 `PHYS ${c.physicalPosture || 'unknown'} conf ${n(c.physicalPostureConfidence,2)}   ${mismatch}\n` +
-`BASE ${c.postureBase || 'unknown'} (${n(deg(c.baseRollRad),0)}°)   auto ${c.postureAutoNormalize ? 'ON':'OFF'}\n` +
-`CAND ${c.postureCandidate || 'unknown'} ${Number.isFinite(candidateAge) ? candidateAge+'ms' : '—'} / 850ms\n` +
+`INPUT ${c.motionInputStatus || 'waiting'}   yaw source ${c.motionYawSource || 'none'}\n` +
 `RAW alpha ${n(raw.alpha)}°   beta ${n(raw.beta)}°   gamma ${n(raw.gamma)}°\n` +
 `compass ${n(raw.compass)}°   accuracy ${n(raw.compassAccuracy)}   absolute ${String(raw.absolute ?? '—')}\n` +
 `FRESH orient ${Number.isFinite(orientAge)?orientAge+'ms':'—'}   applied ${Number.isFinite(appliedAge)?appliedAge+'ms':'—'}   count ${orientCount}   screen changes ${screenChanges}\n` +
@@ -234,7 +222,7 @@ export function createMotionLab({
 `OWNER ${c.cameraControlMode || 'unknown'}   quaternion ${camera.rotationQuaternion ? 'ACTIVE' : 'NONE'}\n` +
 `CAM(q) x ${n(deg(qe?.x))}°   y ${n(deg(qe?.y))}°   z ${n(deg(qe?.z))}°\n` +
 `UP  [${vec(basis?.up)}]   FWD [${vec(basis?.forward)}]\n` +
-`Test: portrait neutral → turn phone sideways and hold ~1s → BASE should adopt; then yaw/pitch should stay natural. Use Auto Basis Off to test roll relative to a frozen holding posture.`;
+`Expected: turn phone RIGHT → view RIGHT; LEFT → LEFT; top edge TOWARD you → look UP; AWAY → look DOWN. Sideways posture pauses motion instead of remapping axes.`;
     drawAxes(basis);
   }
 

@@ -66,9 +66,11 @@ let physicalPostureConfidence = 0;
 let postureCandidate = "unknown";
 let postureCandidateSince = 0;
 let postureBase = "unknown";
-let postureAutoNormalize = true;
+let postureAutoNormalize = false;
 let postureBaseChangedAt = 0;
 let lastOrientationEventAt = 0;
+let motionInputStatus = "waiting";
+let motionYawSource = "none";
 const POSTURE_DWELL_MS = 850;
 
 let lastGeoHeadingRad = null;
@@ -387,50 +389,63 @@ function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg =
 
   const now = Date.now();
   lastOrientationEventAt = now;
-  updatePhysicalPosture(betaDeg, gammaDeg, now);
 
-  const screenAngleDeg = (typeof window.orientation === "number") ? window.orientation : (screen.orientation?.angle || 0);
-  const alpha = BABYLON.Angle.FromDegrees(alphaDeg).radians();
-  const beta = BABYLON.Angle.FromDegrees(betaDeg).radians();
-  const gamma = BABYLON.Angle.FromDegrees(gammaDeg).radians();
-  const screen = BABYLON.Angle.FromDegrees(screenAngleDeg || 0).radians();
+  // SIMPLE MOTION MODE (v3.3): classify the physical posture for diagnostics,
+  // but do not rotate the camera basis to compensate for portrait/landscape.
+  // The phone's own orientation lock is the reliable UI lock on iPhone.
+  const classified = classifyPhysicalPosture(betaDeg, gammaDeg);
+  physicalPosture = classified.posture;
+  physicalPostureConfidence = classified.confidence;
 
-  // DeviceOrientation Euler order Y-X-Z, conventional phone camera correction,
-  // then VIEW-orientation correction.  This creates the raw physical attitude.
-  let q = qMul(qAxis(0,1,0,alpha), qAxis(1,0,0,beta));
-  q = qMul(q, qAxis(0,0,1,-gamma));
-  q = qMul(q, qAxis(1,0,0,-Math.PI / 2));
-  q = qMul(q, qAxis(0,0,1,-screen));
-  q.normalize();
+  // Keep motion deliberately portrait-first.  A sideways phone is a different
+  // control basis; rather than silently remap axes, pause camera updates until
+  // the device returns to its normal upright portrait posture.
+  if (physicalPosture !== "portrait" && physicalPostureConfidence >= 0.35) {
+    motionInputStatus = `paused (${physicalPosture})`;
+    return;
+  }
 
-  // iOS alpha is a poor north reference.  Preserve full attitude but rotate
-  // around WORLD Y so horizontal heading matches webkitCompassHeading.
-  const rawYaw = yawFromQuaternion(q);
-  let desiredYaw = rawYaw;
+  motionInputStatus = "active portrait";
+
+  // YAW: positive compass heading produces positive Babylon yaw.  This makes
+  // a physical turn to the right move the view to the right (and vice versa).
+  // webkitCompassHeading is preferred on iPhone; alpha is the Android/general
+  // fallback and can be calibrated later if a particular browser reports the
+  // opposite convention.
+  let headingDeg;
   if (Number.isFinite(compassHeadingDeg)) {
-    desiredYaw = normalizeAngleRad(-BABYLON.Angle.FromDegrees(compassHeadingDeg).radians() + screen);
-  } else if (Number.isFinite(lastGeoHeadingRad)) {
-    desiredYaw = normalizeAngleRad(lastGeoHeadingRad + screen);
+    headingDeg = compassHeadingDeg;
+    motionYawSource = "compass";
+  } else {
+    headingDeg = alphaDeg;
+    motionYawSource = "alpha";
   }
-  const yawCorrection = normalizeAngleRad(desiredYaw - rawYaw);
-  q = qMul(qAxis(0,1,0,yawCorrection), q);
+  const yaw = normalizeAngleRad(BABYLON.Angle.FromDegrees(headingDeg).radians());
+
+  // PITCH: an upright portrait phone is beta ~= 90 degrees.  Tilting the TOP
+  // edge toward the user raises beta, so positive pitch means look upward.
+  // Tilting the top away lowers beta, producing negative pitch / look down.
+  const pitch = BABYLON.Scalar.Clamp(
+    BABYLON.Angle.FromDegrees(betaDeg - 90).radians(),
+    -1.35,
+    1.35
+  );
+
+  // Roll is intentionally ignored in simple mode.  Raw gamma near an upright
+  // phone is an Euler singularity and was the source of the false horizon tilt.
+  // If we later want deliberate roll as a game input, it can be a separate mode.
+  const roll = 0;
+
+  // Build a camera quaternion directly from the three game-space quantities.
+  // qAxis(X,-pitch) is used because camera-forward +Z rotated around +X points
+  // downward; negating gives positive pitch == look upward.
+  let q = qMul(qAxis(0,1,0,yaw), qAxis(1,0,0,-pitch));
   q.normalize();
-
-  // PHYSICAL HOLDING POSTURE normalization.  The baseline is a discrete local
-  // roll (portrait=0, sideways=+/-90, inverted=180).  Right-multiplying applies
-  // the correction in CAMERA-LOCAL space, so forward/yaw are preserved while a
-  // preferred sideways holding posture becomes the new neutral roll.
-  const baseRoll = postureBaseRollRad(postureBase);
-  if (Math.abs(baseRoll) > 1e-6) {
-    q = qMul(q, qAxis(0,0,1,-baseRoll));
-    q.normalize();
-  }
-
   camera.rotationQuaternion = q;
 
-  localYawRad = yawFromQuaternion(q);
-  localPitchRad = pitchFromQuaternion(q);
-  localRollRad = rollFromQuaternion(q);
+  localYawRad = yaw;
+  localPitchRad = pitch;
+  localRollRad = roll;
 }
 
 function handleDeviceOrientation(ev) {
@@ -515,8 +530,9 @@ function initMotionLabOnce() {
       localYawRad, localPitchRad, localRollRad, motionEnabled,
       physicalPosture, physicalPostureConfidence, postureCandidate, postureCandidateSince,
       postureBase, postureAutoNormalize, postureBaseChangedAt, lastOrientationEventAt,
+      motionInputStatus, motionYawSource, simpleMotionMode: true,
       cameraControlMode: motionEnabled ? "motion" : ((gestureLab && gestureLab.isEnabled && gestureLab.isEnabled()) ? "gesture" : "pointer"),
-      baseRollRad: postureBaseRollRad(postureBase), view: getViewFrameInfo()
+      baseRollRad: 0, view: getViewFrameInfo()
     }),
     setAutoNormalize: setPostureAutoNormalize,
     adoptCurrentPosture: adoptCurrentPhysicalPosture,
