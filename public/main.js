@@ -326,6 +326,17 @@ function applyDeviceOrientation(alphaDeg, betaDeg, gammaDeg, compassHeadingDeg =
   q = qMul(qAxis(0,1,0,yawCorrection), q);
   q.normalize();
 
+  // The iPhone's physical pitch direction is opposite Babylon's camera pitch
+  // convention for our "phone held upright, screen facing user" posture.
+  // Preserve yaw and roll, but mirror pitch by rotating about the camera's
+  // current RIGHT axis by twice the measured pitch in the opposite direction.
+  const measuredPitch = pitchFromQuaternion(q);
+  if (Math.abs(measuredPitch) > 1e-6) {
+    const rightAxis = qRotateVector(q, new BABYLON.Vector3(1, 0, 0)).normalize();
+    q = qMul(qAxis(rightAxis.x, rightAxis.y, rightAxis.z, -2 * measuredPitch), q);
+    q.normalize();
+  }
+
   camera.rotationQuaternion = q.clone();
 
   localYawRad = yawFromQuaternion(q);
