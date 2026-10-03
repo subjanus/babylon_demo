@@ -2,6 +2,7 @@ import { initScene } from "./initScene.js";
 import { initCamera } from "./initCamera.js";
 import { requestDevicePermissions } from "./requestPermissions.js";
 import { createGestureLab } from "./gestureLab.js";
+import { createMotionLab } from "./motionLab.js";
 
 const canvas = document.getElementById("renderCanvas");
 const statusEl = document.getElementById("status");
@@ -341,6 +342,18 @@ function mkButton(stack, id, label, onClick) {
 }
 
 let gestureLab = null;
+let motionLab = null;
+
+function initMotionLabOnce() {
+  if (motionLab) return motionLab;
+  motionLab = createMotionLab({
+    camera,
+    getComputedState: () => ({ localYawRad, localPitchRad, localRollRad, motionEnabled }),
+    onStatus: (msg) => setStatus(msg)
+  });
+  window.__motionLab = motionLab;
+  return motionLab;
+}
 
 function initGestureLabOnce() {
   if (gestureLab) return gestureLab;
@@ -524,6 +537,12 @@ function createDrawerUI() {
     const lab = initGestureLabOnce();
     const on = lab.setEnabled(!lab.isEnabled());
     btn.textBlock.text = on ? "Gesture Lab: On" : "Gesture Lab: Off";
+  });
+
+  const bMotionLab = mkButton(root, "uiMotionLab", "Motion Lab: Off", (btn) => {
+    const lab = initMotionLabOnce();
+    const on = lab.setEnabled(!lab.isEnabled());
+    btn.textBlock.text = on ? "Motion Lab: On" : "Motion Lab: Off";
   });
 
   const help = new BABYLON.GUI.TextBlock("helpText", "Privacy mode: anchor defines the shared world root. Your phone stores a private session GPS origin and only transmits movement in relative meters.");
