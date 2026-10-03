@@ -1,13 +1,21 @@
 import { initScene } from "./initScene.js";
 import { initCamera } from "./initCamera.js";
 import { requestDevicePermissions } from "./requestPermissions.js";
+import { createGestureLab } from "./gestureLab.js";
 
 const canvas = document.getElementById("renderCanvas");
 const statusEl = document.getElementById("status");
 
 const { engine, scene } = initScene(canvas);
 const camera = initCamera(scene, canvas);
-camera.position.y = 2.8;
+camera.position.y = 2.4;
+
+const gestureLab = createGestureLab({
+  canvas,
+  scene,
+  isBlocked: (ev) => isPointerOverDrawerUI(ev)
+});
+window.__gestureLab = gestureLab;
 
 const socket = io({
   path: "/socket.io",
@@ -84,8 +92,8 @@ const SEND_MIN_MS = 350;
 const DEAD_BAND_M = 0.35;
 const TELEMETRY_MIN_MS = 500;
 const SELECT_DELETE_RANGE_M = 8;
-const DROPPED_CUBE_Y = -1.4;
-const PLAYER_POINTER_Y = -0.35;
+const DROPPED_CUBE_Y = -1;
+const PLAYER_POINTER_Y = 0.6;
 const ANCHOR_KEY = "fieldkit.anchor.v1";
 const SESSION_ORIGIN_KEY = "fieldkit.sessionOrigin.v1";
 
@@ -123,10 +131,11 @@ function latLonToRel(lat, lon, aLat = anchorLat, aLon = anchorLon) {
 }
 function relDist(a, b) { return Math.hypot((a.x || 0) - (b.x || 0), (a.z || 0) - (b.z || 0)); }
 function currentRel() {
-  const lat = isNumber(filtLat) ? filtLat : rawLat;
-  const lon = isNumber(filtLon) ? filtLon : rawLon;
+  const lat = isNumber(rawLat) ? rawLat : filtLat;
+  const lon = isNumber(rawLon) ? rawLon : filtLon;
   if (!isNumber(lat) || !isNumber(lon)) return null;
-  return latLonToRel(lat, lon, anchorLat, anchorLon);
+  if (!isNumber(sessionOriginLat) || !isNumber(sessionOriginLon)) return null;
+  return latLonToRel(lat, lon, sessionOriginLat, sessionOriginLon);
 }
 function setStatus(s) {
   if (statusEl) statusEl.textContent = s;
@@ -145,7 +154,13 @@ function setSelected(s, canDelete = false) {
 function saveAnchor() {
   localStorage.setItem(ANCHOR_KEY, JSON.stringify({ lat: anchorLat, lon: anchorLon }));
 }
-function saveSessionOrigin() {}
+function saveSessionOrigin() {
+  if (isNumber(sessionOriginLat) && isNumber(sessionOriginLon)) {
+    localStorage.setItem(SESSION_ORIGIN_KEY, JSON.stringify({ lat: sessionOriginLat, lon: sessionOriginLon, anchorKey }));
+  } else {
+    localStorage.removeItem(SESSION_ORIGIN_KEY);
+  }
+}
 function loadAnchor() {
   try {
     const raw = JSON.parse(localStorage.getItem(ANCHOR_KEY) || "null");
@@ -154,9 +169,14 @@ function loadAnchor() {
       anchorLat = n.lat; anchorLon = n.lon; anchorKey = n.key;
     }
   } catch (_) {}
-  sessionOriginLat = null;
-  sessionOriginLon = null;
-  sessionOriginPending = false;
+  try {
+    const rawOrigin = JSON.parse(localStorage.getItem(SESSION_ORIGIN_KEY) || "null");
+    if (rawOrigin && rawOrigin.anchorKey === anchorKey && Number.isFinite(Number(rawOrigin.lat)) && Number.isFinite(Number(rawOrigin.lon))) {
+      sessionOriginLat = Number(rawOrigin.lat);
+      sessionOriginLon = Number(rawOrigin.lon);
+      sessionOriginPending = false;
+    }
+  } catch (_) {}
 }
 function parseAnchorText(value) {
   const raw = String(value ?? "").trim();
@@ -172,25 +192,34 @@ function formatAnchorText(lat = anchorLat, lon = anchorLon) {
 }
 function updateAnchorSummary() {
   if (!anchorSummaryText) return;
-  const gpsReady = isNumber(rawLat) && isNumber(rawLon);
-  anchorSummaryText.text = `Anchor: ${anchorLat.toFixed(6)}, ${anchorLon.toFixed(6)} | GPS: ${gpsReady ? "ready" : "waiting"}`;
+  let suffix = " | Session origin: waiting";
+  if (isNumber(sessionOriginLat) && isNumber(sessionOriginLon)) suffix = " | Session origin: captured";
+  else if (sessionOriginPending) suffix = " | Session origin: awaiting GPS";
+  anchorSummaryText.text = `Anchor: ${anchorLat.toFixed(6)}, ${anchorLon.toFixed(6)}${suffix}`;
 }
 function calibrateSessionOrigin(lat = rawLat, lon = rawLon) {
+  if (!isNumber(lat) || !isNumber(lon)) return false;
+  sessionOriginLat = Number(lat);
+  sessionOriginLon = Number(lon);
+  sessionOriginPending = false;
   lastSentRelX = null;
   lastSentRelZ = null;
   lastSentAt = 0;
+  saveSessionOrigin();
   updateAnchorSummary();
-  return isNumber(lat) && isNumber(lon);
+  return true;
 }
 function applyAnchor(lat, lon) {
   const n = normAnchor(lat, lon);
   anchorLat = n.lat; anchorLon = n.lon; anchorKey = n.key;
   if (anchorInput) anchorInput.text = formatAnchorText(anchorLat, anchorLon);
-  lastSentRelX = null;
-  lastSentRelZ = null;
-  lastSentAt = 0;
+  sessionOriginLat = null;
+  sessionOriginLon = null;
+  sessionOriginPending = true;
+  if (isNumber(rawLat) && isNumber(rawLon)) calibrateSessionOrigin(rawLat, rawLon);
   updateAnchorSummary();
   saveAnchor();
+  saveSessionOrigin();
   sendGpsNow();
 }
 
@@ -475,10 +504,17 @@ function createDrawerUI() {
     setStatus("Motion enabled");
   });
 
+  mkButton(root, "uiGestureLab", "Gesture Lab: Off", (btn) => {
+    const on = gestureLab.toggle();
+    btn.textBlock.text = on ? "Gesture Lab: On" : "Gesture Lab: Off";
+    setStatus(on ? "Gesture Lab enabled" : "Gesture Lab disabled");
+    emitTelemetry("ui", { action: "gestureLab", enabled: on });
+  });
+
   mkButton(root, "uiColor", "Toggle Color", () => socket.emit("toggleColor"));
   mkButton(root, "uiDrop", "Drop Cube", () => {
     const rel = currentRel();
-    if (!rel) { setStatus("Waiting for GPS before drop"); return; }
+    if (!rel) return;
     socket.emit("dropCube", { anchorLat, anchorLon, relX: rel.x, relY: 0, relZ: rel.z });
     emitTelemetry("drop", { relX: rel.x, relZ: rel.z });
   });
@@ -487,7 +523,7 @@ function createDrawerUI() {
   uiDeleteBtn.isEnabled = false;
   uiDeleteBtn.alpha = 0.5;
 
-  const help = new BABYLON.GUI.TextBlock("helpText", "Privacy mode: anchor defines the shared world root. Clients transmit only meter offsets from that anchor, not raw GPS.");
+  const help = new BABYLON.GUI.TextBlock("helpText", "Privacy mode: anchor defines the shared world root. Your phone stores a private session GPS origin and only transmits movement in relative meters.");
   help.height = "70px";
   help.textWrapping = true;
   help.fontSize = 11;
@@ -683,8 +719,10 @@ scene.onPointerObservable.add((pi) => {
 });
 
 function onGeo(lat, lon, coords) {
-  rawLat = lat;
-  rawLon = lon;
+  rawLat = lat; rawLon = lon;
+  if (sessionOriginPending && !isNumber(sessionOriginLat) && !isNumber(sessionOriginLon)) {
+    calibrateSessionOrigin(lat, lon);
+  }
   if (Number.isFinite(coords?.heading)) {
     lastGeoHeadingRad = normalizeAngleRad(-BABYLON.Angle.FromDegrees(coords.heading).radians());
     if (!motionEnabled) {
@@ -693,17 +731,17 @@ function onGeo(lat, lon, coords) {
     }
   }
   if (filtLat === null || filtLon === null) {
-    filtLat = lat;
-    filtLon = lon;
+    filtLat = lat; filtLon = lon;
   } else {
     filtLat = filtLat + (lat - filtLat) * GPS_ALPHA;
     filtLon = filtLon + (lon - filtLon) * GPS_ALPHA;
   }
-  updateAnchorSummary();
   emitTelemetry("gps", {
     accuracy: coords?.accuracy,
     heading: coords?.heading,
-    speed: coords?.speed
+    speed: coords?.speed,
+    sessionOrigin: isNumber(sessionOriginLat) && isNumber(sessionOriginLon) ? { lat: sessionOriginLat, lon: sessionOriginLon } : null,
+    sessionOriginPending
   });
   maybeSendGpsUpdate();
 }
@@ -716,7 +754,10 @@ function sendGpsNow() {
 
 function maybeSendGpsUpdate() {
   const rel = currentRel();
-  if (!rel) return;
+  if (!rel) {
+    if (sessionOriginPending) updateAnchorSummary();
+    return;
+  }
   const now = Date.now();
   if (lastSentRelX === null || lastSentRelZ === null) {
     lastSentRelX = rel.x; lastSentRelZ = rel.z; lastSentAt = now; sendGpsNow(); return;
@@ -735,20 +776,15 @@ if ("geolocation" in navigator) {
       const lon = pos.coords.longitude;
       if (isNumber(lat) && isNumber(lon)) onGeo(lat, lon, pos.coords);
     },
-    (err) => { setStatus(`Location error (${err?.code ?? "?"})`); },
+    () => {},
     { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 }
   );
 }
 
 function updateLocalPlayerPointer() {
-  if (!socket.id) return;
-  const localColor = lastWorldState?.clients?.[socket.id]?.color || "#FFCC00";
-  const ptr = ensurePlayerPointer(socket.id, localColor);
+  const ptr = playerPointers[socket.id];
   const me = currentRel();
-  if (!me) {
-    ptr.setEnabled(false);
-    return;
-  }
+  if (!ptr || !me) return;
   ptr.setEnabled(true);
   ptr.position.set(me.x, PLAYER_POINTER_Y, me.z);
   ptr.rotation.y = getCameraYawRad() - worldRoot.rotation.y;
@@ -766,19 +802,9 @@ function reconcileWorld(state) {
   for (const [id, c] of Object.entries(clients)) {
     if (c.role === "daemon") continue;
     const ptr = ensurePlayerPointer(id, c.color);
-    if (id !== socket.id && (c.anchorKey !== anchorKey || !isNumber(c.relX) || !isNumber(c.relZ))) {
+    if (c.anchorKey !== anchorKey || !isNumber(c.relX) || !isNumber(c.relZ)) {
       ptr.setEnabled(false);
       continue;
-    }
-    if (id === socket.id) {
-      const meLocal = currentRel();
-      if (meLocal) {
-        ptr.setEnabled(true);
-        ptr.position.set(meLocal.x, PLAYER_POINTER_Y, meLocal.z);
-        ptr.metadata = { kind: "playerPointer", socketId: id, rel: { x: meLocal.x, z: meLocal.z } };
-        ptr.rotation.y = getCameraYawRad() - worldRoot.rotation.y;
-        continue;
-      }
     }
     ptr.setEnabled(true);
     ptr.position.set(c.relX, PLAYER_POINTER_Y, c.relZ);
@@ -893,7 +919,7 @@ socket.on("deleteResult", (r) => {
 });
 
 socket.on("connect", () => {
-  setStatus("Connected");
+  setStatus(sessionOriginPending ? "Connected | Waiting for GPS calibration" : "Connected");
   emitTelemetry("connect", { id: socket.id });
   sendGpsNow();
 });
