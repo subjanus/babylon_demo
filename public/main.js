@@ -10,13 +10,6 @@ const { engine, scene } = initScene(canvas);
 const camera = initCamera(scene, canvas);
 camera.position.y = 2.4;
 
-const gestureLab = createGestureLab({
-  canvas,
-  scene,
-  isBlocked: (ev) => isPointerOverDrawerUI(ev)
-});
-window.__gestureLab = gestureLab;
-
 const socket = io({
   path: "/socket.io",
   transports: ["websocket", "polling"],
@@ -347,6 +340,17 @@ function mkButton(stack, id, label, onClick) {
   return b;
 }
 
+let gestureLab = null;
+
+function initGestureLabOnce() {
+  if (gestureLab) return gestureLab;
+  gestureLab = createGestureLab({
+    canvas, camera, scene,
+    onStatus: (msg) => setStatus(msg)
+  });
+  return gestureLab;
+}
+
 function createDrawerUI() {
   const adt = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("ui", true, scene);
 
@@ -504,13 +508,6 @@ function createDrawerUI() {
     setStatus("Motion enabled");
   });
 
-  mkButton(root, "uiGestureLab", "Gesture Lab: Off", (btn) => {
-    const on = gestureLab.toggle();
-    btn.textBlock.text = on ? "Gesture Lab: On" : "Gesture Lab: Off";
-    setStatus(on ? "Gesture Lab enabled" : "Gesture Lab disabled");
-    emitTelemetry("ui", { action: "gestureLab", enabled: on });
-  });
-
   mkButton(root, "uiColor", "Toggle Color", () => socket.emit("toggleColor"));
   mkButton(root, "uiDrop", "Drop Cube", () => {
     const rel = currentRel();
@@ -522,6 +519,12 @@ function createDrawerUI() {
   uiDeleteBtn = mkButton(root, "uiDelete", "Delete Selected", attemptDeleteSelected);
   uiDeleteBtn.isEnabled = false;
   uiDeleteBtn.alpha = 0.5;
+
+  const bGesture = mkButton(root, "uiGestureLab", "Gesture Lab: Off", (btn) => {
+    const lab = initGestureLabOnce();
+    const on = lab.setEnabled(!lab.isEnabled());
+    btn.textBlock.text = on ? "Gesture Lab: On" : "Gesture Lab: Off";
+  });
 
   const help = new BABYLON.GUI.TextBlock("helpText", "Privacy mode: anchor defines the shared world root. Your phone stores a private session GPS origin and only transmits movement in relative meters.");
   help.height = "70px";
