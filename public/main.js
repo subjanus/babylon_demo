@@ -8,7 +8,7 @@ const canvas = document.getElementById("renderCanvas");
 const statusEl = document.getElementById("status");
 
 const { engine, scene } = initScene(canvas);
-// Motion Engine v3.4: eye-level horizon + reacquirable ground player marker.
+// Symbolic Calibration v1: v3.5 simple portrait motion + explicit UP/DOWN beacons.
 const camera = initCamera(scene, canvas);
 camera.position.y = 2.4;
 
@@ -49,6 +49,61 @@ eastMat.disableLighting = true;
 eastTick.material = eastMat;
 eastTick.position.set(9, 0, 0);
 eastTick.parent = horizonRoot;
+
+// SYMBOLIC CALIBRATION v1 ---------------------------------------------------
+// These two objects deliberately do NOT depend on GPS/worldRoot. They stay
+// directly above and below the camera in world-Y so we can tell the difference
+// between "the camera failed to pitch" and "there was simply nothing there".
+const symbolicRoot = new BABYLON.TransformNode("symbolicRoot", scene);
+
+const symbolicUp = BABYLON.MeshBuilder.CreateSphere(
+  "symbolicUpGold",
+  { diameter: 1.5, segments: 24 },
+  scene
+);
+const symbolicUpMat = new BABYLON.StandardMaterial("symbolicUpGoldMat", scene);
+symbolicUpMat.diffuseColor = BABYLON.Color3.FromHexString("#FFD54A");
+symbolicUpMat.emissiveColor = BABYLON.Color3.FromHexString("#FFB300").scale(0.9);
+symbolicUpMat.specularColor = BABYLON.Color3.Black();
+symbolicUp.material = symbolicUpMat;
+symbolicUp.parent = symbolicRoot;
+symbolicUp.position.set(0, 6.0, 0);
+symbolicUp.isPickable = false;
+
+// A bright ring + triangular center directly below the camera. This is a local
+// "ME / DOWN" diagnostic, independent of the network player mesh.
+const symbolicDownRing = BABYLON.MeshBuilder.CreateTorus(
+  "symbolicDownRing",
+  { diameter: 2.4, thickness: 0.16, tessellation: 64 },
+  scene
+);
+const symbolicDownMat = new BABYLON.StandardMaterial("symbolicDownMat", scene);
+symbolicDownMat.diffuseColor = BABYLON.Color3.FromHexString("#22D3EE");
+symbolicDownMat.emissiveColor = BABYLON.Color3.FromHexString("#22D3EE").scale(0.95);
+symbolicDownMat.specularColor = BABYLON.Color3.Black();
+symbolicDownMat.disableLighting = true;
+symbolicDownRing.material = symbolicDownMat;
+symbolicDownRing.parent = symbolicRoot;
+symbolicDownRing.position.set(0, -2.05, 0);
+symbolicDownRing.isPickable = false;
+
+const symbolicDownTri = BABYLON.MeshBuilder.CreateDisc(
+  "symbolicDownTriangle",
+  { radius: 0.82, tessellation: 3, sideOrientation: BABYLON.Mesh.DOUBLESIDE },
+  scene
+);
+symbolicDownTri.material = symbolicDownMat;
+symbolicDownTri.parent = symbolicRoot;
+symbolicDownTri.rotation.x = Math.PI / 2;
+symbolicDownTri.position.set(0, -2.02, 0);
+symbolicDownTri.isPickable = false;
+
+function updateSymbolicCalibration() {
+  // Follow camera translation only. Never inherit camera rotation.
+  symbolicRoot.position.copyFrom(camera.position);
+  symbolicRoot.rotationQuaternion = null;
+  symbolicRoot.rotation.set(0, 0, 0);
+}
 
 let followMe = true;
 let lockNorth = false;
@@ -1213,6 +1268,7 @@ engine.runRenderLoop(() => {
   updateLocalPlayerPointer();
   maybeSendOrientationUpdate();
   updateLocalHorizon();
+  updateSymbolicCalibration();
   updateSelectionHUD();
   scene.render();
 });

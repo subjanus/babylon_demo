@@ -1,4 +1,4 @@
-// Motion Lab v3.5: calibrated portrait pitch diagnostic.
+// Motion Lab SYMBOLIC v1: v3.5 simple portrait motion with explicit vertical beacons.
 // VIEW and PHYS are still displayed, but the camera no longer tries to auto-
 // normalize sideways holding postures. iPhone orientation lock owns the UI;
 // motion input is deliberately portrait-first, with roll ignored.
@@ -210,8 +210,8 @@ export function createMotionLab({
     const appliedAge = nowAge(c.lastOrientationEventAt);
 
     readout.textContent =
-`MOTION LAB v3.5 PITCHFIX   last mark: ${last}   marks: ${poses.length}\n` +
-`MODE portrait-lock / calibrated pitch / roll ignored\n` +
+`MOTION LAB SYMBOLIC v1   last mark: ${last}   marks: ${poses.length}\n` +
+`MODE simple portrait motion / roll ignored / symbolic beacons\n` +
 `VIEW ${s.viewport} ${s.width}x${s.height}   screen ${s.type} @ ${n(s.angle,0)}°\n` +
 `PHYS ${c.physicalPosture || 'unknown'} conf ${n(c.physicalPostureConfidence,2)}   ${mismatch}\n` +
 `INPUT ${c.motionInputStatus || 'waiting'}   yaw source ${c.motionYawSource || 'none'}   pitch zero ${n(c.pitchZeroDeg)}°\n` +
@@ -222,7 +222,8 @@ export function createMotionLab({
 `OWNER ${c.cameraControlMode || 'unknown'}   quaternion ${camera.rotationQuaternion ? 'ACTIVE' : 'NONE'}\n` +
 `CAM(q) x ${n(deg(qe?.x))}°   y ${n(deg(qe?.y))}°   z ${n(deg(qe?.z))}°\n` +
 `UP  [${vec(basis?.up)}]   FWD [${vec(basis?.forward)}]\n` +
-`Expected: RIGHT → view RIGHT; LEFT → LEFT; top edge TOWARD → look UP; AWAY → look DOWN to nearly vertical. Sideways posture keeps yaw but holds pitch.`;
+`SYMBOLS: GOLD sphere = UP (+6m); CYAN ring/triangle = ME/DOWN (-2.05m)\n` +
+`Expected: RIGHT → view RIGHT; LEFT → LEFT; top edge TOWARD → look UP; AWAY → look DOWN. If a beacon is absent, the camera did not reach that direction.`;
     drawAxes(basis);
   }
 
