@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Alien Landscape Daemon</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    html,body{margin:0;padding:0;background:#08100f;color:#e7f7ef;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+    .wrap{padding:16px;max-width:860px;margin:0 auto}
+    h2{margin:0 0 6px}.muted{color:#91aaa0;font-size:12px;line-height:1.45}.card{border:1px solid #18332b;border-radius:16px;padding:14px;background:#0c1815;margin-top:12px}
+    button,select,textarea,input{width:100%;box-sizing:border-box;background:#10231e;color:#e7f7ef;border:1px solid #285246;border-radius:12px;padding:11px;font-size:14px}
+    button{cursor:pointer;margin-top:10px;font-weight:650}button:disabled{opacity:.45;cursor:not-allowed}.danger{background:#2a1014;border-color:#7f1d1d}.accent{background:#12372c;border-color:#3f8d72}
+    .row{display:flex;gap:10px;align-items:flex-start}.col{flex:1}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+    label{display:block;color:#b8cdc4;font-size:12px;margin:0 0 5px}input[type=range]{padding:0}textarea{min-height:78px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.stat{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#bdebd7;font-size:12px;white-space:pre-wrap}.pill{display:inline-block;border:1px solid #285246;border-radius:999px;padding:4px 8px;margin:2px 3px 2px 0;color:#bdebd7;font-size:11px}a{color:#83dfbd}
+    @media(max-width:650px){.row,.grid,.grid4{display:block}.col,.grid>div,.grid4>div{margin-top:10px}.wrap{padding:10px}}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h2>Alien Landscape Daemon</h2>
+  <div class="muted">A procedural world-painter built from the primitive shapes the current client already understands. It can plant a broad region around one active player and later remove all landscape objects created by this daemon family — even after the page reconnects.</div>
+  <div class="muted" style="margin-top:6px">World: <a href="/">/</a> &nbsp; Circles: <a href="/circles">/circles</a> &nbsp; Debug: <a href="/debug">/debug</a></div>
+
+  <div class="card">
+    <label>Daemon auth cue (from <code>server/alien-auth.txt</code>)</label>
+    <textarea id="authCue" placeholder="Paste alien-auth.txt here"></textarea>
+    <button id="authBtn" class="accent">Authenticate Landscape Daemon</button>
+    <div id="authStatus" class="muted" style="margin-top:8px">Waiting for auth…</div>
+  </div>
+
+  <div class="card">
+    <div class="grid">
+      <div><label>Center on player</label><select id="target"><option value="">Auto (first active player)</option></select></div>
+      <div><label>Preset</label><select id="preset"><option value="balanced">Balanced alien wilds</option><option value="forest">Tall fungal forest</option><option value="scrub">Sparse scrubland</option><option value="ruins">Artifact field / ruins</option><option value="stones">Rock garden</option></select></div>
+    </div>
+
+    <div class="grid" style="margin-top:10px">
+      <div><label>Feature count: <span id="countVal">90</span></label><input id="count" type="range" min="5" max="260" value="90"></div>
+      <div><label>Radius: <span id="radiusVal">180</span> m</label><input id="radius" type="range" min="15" max="1200" step="5" value="180"></div>
+      <div><label>Center offset X: <span id="offXVal">0</span> m</label><input id="offX" type="range" min="-500" max="500" step="5" value="0"></div>
+      <div><label>Center offset Z: <span id="offZVal">0</span> m</label><input id="offZ" type="range" min="-500" max="500" step="5" value="0"></div>
+    </div>
+
+    <div style="margin-top:12px"><label>Landscape mix</label></div>
+    <div class="grid4">
+      <div><label>Trees <span id="treeVal">35</span>%</label><input id="tree" type="range" min="0" max="100" value="35"></div>
+      <div><label>Plants <span id="plantVal">35</span>%</label><input id="plant" type="range" min="0" max="100" value="35"></div>
+      <div><label>Stones <span id="stoneVal">22</span>%</label><input id="stone" type="range" min="0" max="100" value="22"></div>
+      <div><label>Artifacts <span id="artifactVal">8</span>%</label><input id="artifact" type="range" min="0" max="100" value="8"></div>
+    </div>
+
+    <div class="grid" style="margin-top:10px">
+      <div><label>Seed</label><input id="seed" value="strange-garden-1"></div>
+      <div><label>Minimum empty center</label><select id="inner"><option value="0">None</option><option value="5">5 m</option><option value="10" selected>10 m</option><option value="20">20 m</option><option value="40">40 m</option></select></div>
+    </div>
+
+    <div id="estimate" class="stat" style="margin-top:12px"></div>
+    <button id="spawn" class="accent" disabled>Plant alien landscape</button>
+    <button id="clear" class="danger" disabled>Remove ALL alien landscape objects</button>
+    <div id="status" class="stat" style="margin-top:10px">Connecting…</div>
+  </div>
+
+  <div class="card">
+    <div class="muted">Species vocabulary</div>
+    <div style="margin-top:6px"><span class="pill">crooked stalk</span><span class="pill">bulb tree</span><span class="pill">fork tree</span><span class="pill">umbrella fungus</span><span class="pill">shard plant</span><span class="pill">scrub cluster</span><span class="pill">smooth stones</span><span class="pill">crystal stones</span><span class="pill">monolith</span><span class="pill">ring relic</span><span class="pill">beacon</span></div>
+    <div class="muted" style="margin-top:10px">Artifacts are tap-triggered. Latest artifact trigger:</div>
+    <pre id="triggerLog" class="stat">None yet.</pre>
+  </div>
+</div>
+<script>
+const socket=io({transports:['websocket','polling']});
+const $=id=>document.getElementById(id);
+const els={authCue:$('authCue'),authBtn:$('authBtn'),authStatus:$('authStatus'),target:$('target'),preset:$('preset'),count:$('count'),radius:$('radius'),offX:$('offX'),offZ:$('offZ'),tree:$('tree'),plant:$('plant'),stone:$('stone'),artifact:$('artifact'),seed:$('seed'),inner:$('inner'),estimate:$('estimate'),spawn:$('spawn'),clear:$('clear'),status:$('status'),triggerLog:$('triggerLog')};
+let authed=false,lastState=null,creating=false,createdTotal=0,expectedTotal=0,pendingCreate=null;
+const MAX_DAEMON_OBJECTS=1200,BATCH=250;
+const PALETTES={
+  trunk:['#455A3A','#586F3D','#6D5A3B','#3D6654'],
+  foliage:['#72C94B','#B8E64B','#55D6A1','#A46CE8','#DF6BE0','#5BE7E7'],
+  plant:['#66E38F','#83E35B','#C7E85B','#D46AF0','#58C6D8','#E986D1'],
+  stone:['#6E7D78','#89948C','#69707D','#7C6B79','#596C68'],
+  artifact:['#6EE7F2','#F2A65A','#BC7CFF','#66F0B0','#F06EAA','#F5E663']
+};
+function pick(r,a){return a[Math.floor(r()*a.length)]} function lerp(a,b,t){return a+(b-a)*t}
+function hashSeed(s){let h=2166136261>>>0;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return h>>>0}
+function rngFrom(seed){let a=hashSeed(seed)||1;return function(){a+=0x6D2B79F5;let t=a;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296}}
+function shortId(id){id=String(id||'');return id.slice(0,4)+'…'+id.slice(-3)}
+function syncLabels(){for(const [id,out] of [['count','countVal'],['radius','radiusVal'],['offX','offXVal'],['offZ','offZVal'],['tree','treeVal'],['plant','plantVal'],['stone','stoneVal'],['artifact','artifactVal']]) $(out).textContent=$(id).value;updateEstimate()}
+['count','radius','offX','offZ','tree','plant','stone','artifact'].forEach(id=>$(id).addEventListener('input',syncLabels));
+function normalizedWeights(){const raw={tree:+els.tree.value,plant:+els.plant.value,stone:+els.stone.value,artifact:+els.artifact.value};let sum=Object.values(raw).reduce((a,b)=>a+b,0);if(sum<=0){raw.stone=1;sum=1}for(const k in raw)raw[k]/=sum;return raw}
+function estCost(){const w=normalizedWeights();const avg=w.tree*3.35+w.plant*2.45+w.stone*1.25+w.artifact*2.8;return Math.ceil(+els.count.value*avg)}
+function updateEstimate(){const e=estCost(),ok=e<=MAX_DAEMON_OBJECTS;els.estimate.textContent=`Estimated primitives: ~${e} / ${MAX_DAEMON_OBJECTS} daemon limit\nArea: π × ${els.radius.value}² ≈ ${Math.round(Math.PI*(+els.radius.value)**2).toLocaleString()} m²`+(ok?'':'\n⚠ Reduce feature count or increase the stone mix.');els.spawn.disabled=!authed||creating||!ok}
+function updateTargets(state){const clients=state?.clients||{},ids=Object.keys(clients).filter(id=>(clients[id].role||'player')==='player');const cur=els.target.value;els.target.innerHTML='<option value="">Auto (first active player)</option>';for(const id of ids){const c=clients[id],o=document.createElement('option');o.value=id;o.textContent=Number.isFinite(c.relX)&&Number.isFinite(c.relZ)?`${shortId(id)} @ ${c.anchorKey}`:`${shortId(id)} (no position)`;els.target.appendChild(o)}if(ids.includes(cur))els.target.value=cur}
+function getTarget(){const cs=lastState?.clients||{},ids=Object.keys(cs).filter(id=>(cs[id].role||'player')==='player'&&Number.isFinite(cs[id].relX)&&Number.isFinite(cs[id].relZ));const id=els.target.value;if(id&&cs[id]&&Number.isFinite(cs[id].relX))return{id,client:cs[id]};return ids.length?{id:ids[0],client:cs[ids[0]]}:null}
+function baseObj(ctx,kind,x,y,z,sx,sy,sz,color,subtype,meta={}){return{kind,subtype,anchorLat:ctx.anchorLat,anchorLon:ctx.anchorLon,position:{x,y,z},rotation:{x:0,y:0,z:0},scale:{x:sx,y:sy,z:sz},visual:{color,opacity:.96,wireframe:false},metadata:{daemon:'alienLandscape',featureId:ctx.featureId,category:ctx.category,variant:ctx.variant,seed:ctx.seed,...meta}}}
+function rotateOffset(x,z,a,dx,dz){return{x:x+dx*Math.cos(a)-dz*Math.sin(a),z:z+dx*Math.sin(a)+dz*Math.cos(a)}}
+function treeFeature(ctx,r,x,z){const o=[],v=Math.floor(r()*3);ctx.variant=['crookedStalk','bulbTree','forkTree'][v];const a=r()*Math.PI*2,h=lerp(2.2,3.3,r()),trunk=pick(r,PALETTES.trunk),leaf=pick(r,PALETTES.foliage);if(v===0){let t=baseObj(ctx,'cylinder',x,h*h/2,z,.72,h,.72,trunk,'alienTree');t.rotation.z=lerp(-.18,.18,r());t.rotation.y=a;o.push(t);const p=rotateOffset(x,z,a,0,lerp(.25,.7,r()));o.push(baseObj(ctx,'sphere',p.x,h*h*.92,p.z,2.1,1.25,1.75,leaf,'alienTree'))}else if(v===1){o.push(baseObj(ctx,'cylinder',x,h*h/2,z,.8,h,.8,trunk,'alienTree'));o.push(baseObj(ctx,'sphere',x,h*h*.95,z,2.35,1.65,2.35,leaf,'alienTree'));o.push(baseObj(ctx,'sphere',x+lerp(-1.4,1.4,r()),h*h*.82,z+lerp(-1.4,1.4,r()),1.1,1.0,1.1,pick(r,PALETTES.foliage),'alienTree'))}else{o.push(baseObj(ctx,'cylinder',x,h*h/2,z,.74,h,.74,trunk,'alienTree'));for(const side of[-1,1]){const p=rotateOffset(x,z,a,side*.85,0);let b=baseObj(ctx,'cylinder',p.x,h*h*.72,p.z,.48,1.65,.48,trunk,'alienTree');b.rotation.z=side*.55;b.rotation.y=a;o.push(b)}o.push(baseObj(ctx,'sphere',x,h*h*.98,z,1.8,1.15,1.8,leaf,'alienTree'))}return o}
+function plantFeature(ctx,r,x,z){const o=[],v=Math.floor(r()*3);ctx.variant=['umbrellaFungus','shardPlant','scrubCluster'][v];if(v===0){const h=lerp(1.05,1.8,r());o.push(baseObj(ctx,'cylinder',x,h*h/2,z,.42,h,.42,pick(r,PALETTES.trunk),'alienPlant'));o.push(baseObj(ctx,'sphere',x,h*h*.92,z,1.45,.48,1.45,pick(r,PALETTES.plant),'alienPlant'))}else if(v===1){const n=2+Math.floor(r()*3),a=r()*Math.PI*2;for(let i=0;i<n;i++){const p=rotateOffset(x,z,a+i*2.1,lerp(.15,.55,r()),0);let q=baseObj(ctx,'box',p.x,lerp(.8,1.8,r()),p.z,.38,lerp(1.2,2.2,r()),.38,pick(r,PALETTES.plant),'alienPlant');q.rotation.z=lerp(-.45,.45,r());q.rotation.y=a+i*2.1;o.push(q)}}else{const n=3+Math.floor(r()*3);for(let i=0;i<n;i++){const a=r()*Math.PI*2,d=r()*.9,p=rotateOffset(x,z,a,d,0);o.push(baseObj(ctx,'sphere',p.x,lerp(.18,.42,r()),p.z,lerp(.48,.85,r()),lerp(.28,.55,r()),lerp(.48,.85,r()),pick(r,PALETTES.plant),'alienPlant'))}}return o}
+function stoneFeature(ctx,r,x,z){const o=[],v=r()<.72?0:1;ctx.variant=v===0?'smoothStone':'crystalStone';if(v===0){o.push(baseObj(ctx,'sphere',x,lerp(.15,.45,r()),z,lerp(.55,1.15,r()),lerp(.3,.72,r()),lerp(.55,1.25,r()),pick(r,PALETTES.stone),'alienStone'))}else{const n=1+(r()>.55?1:0);for(let i=0;i<n;i++){let b=baseObj(ctx,'box',x+lerp(-.35,.35,r()),lerp(.35,.8,r()),z+lerp(-.35,.35,r()),lerp(.38,.65,r()),lerp(.75,1.35,r()),lerp(.38,.65,r()),pick(r,PALETTES.artifact),'alienStone');b.rotation.y=r()*Math.PI;b.rotation.z=lerp(-.35,.35,r());o.push(b)}}return o}
+function artifactFeature(ctx,r,x,z){const o=[],v=Math.floor(r()*3);ctx.variant=['monolith','ringRelic','beacon'][v];const color=pick(r,PALETTES.artifact);if(v===0){let b=baseObj(ctx,'box',x,1.5,z,.72,1.85,.55,color,'alienArtifact');b.rotation.y=r()*Math.PI;b.visual.wireframe=r()>.5;o.push(b)}else if(v===1){let ring=baseObj(ctx,'triggerZone',x,.12,z,2.0,1,2.0,color,'alienArtifact');ring.rotation.x=Math.PI/2;o.push(ring);o.push(baseObj(ctx,'sphere',x,.55,z,.65,.65,.65,pick(r,PALETTES.artifact),'alienArtifact'))}else{o.push(baseObj(ctx,'cylinder',x,1.2,z,.58,1.55,.58,'#59656A','alienArtifact'));o.push(baseObj(ctx,'sphere',x,2.8,z,.72,.72,.72,color,'alienArtifact'));o.push(baseObj(ctx,'triggerZone',x,.1,z,1.5,1,1.5,color,'alienArtifact'))}for(const obj of o){obj.trigger={enabled:true,type:'tap',radius:5,triggerId:`alien:${ctx.featureId}`,cooldownMs:800,oncePerClient:false};obj.metadata.interactive=true}return o}
+function chooseCategory(r,w){const t=r();if(t<w.tree)return'tree';if(t<w.tree+w.plant)return'plant';if(t<w.tree+w.plant+w.stone)return'stone';return'artifact'}
+function buildLandscape(){const target=getTarget();if(!target)throw new Error('No positioned player is available.');const c=target.client,count=+els.count.value,radius=+els.radius.value,inner=Math.min(+els.inner.value,radius-1),offX=+els.offX.value,offZ=+els.offZ.value,seed=els.seed.value.trim()||'alien',r=rngFrom(seed),w=normalizedWeights(),all=[];const cx=c.relX+offX,cz=c.relZ+offZ;for(let i=0;i<count;i++){const a=r()*Math.PI*2;const d=Math.sqrt(r()*(radius*radius-inner*inner)+inner*inner);const x=cx+Math.cos(a)*d,z=cz+Math.sin(a)*d,cat=chooseCategory(r,w);const ctx={anchorLat:c.anchorLat,anchorLon:c.anchorLon,featureId:`${seed}:${i}`,category:cat,variant:'',seed};let parts;if(cat==='tree')parts=treeFeature(ctx,r,x,z);else if(cat==='plant')parts=plantFeature(ctx,r,x,z);else if(cat==='stone')parts=stoneFeature(ctx,r,x,z);else parts=artifactFeature(ctx,r,x,z);all.push(...parts)}return{objects:all,targetId:target.id,cx,cz,radius,seed}}
+function sendCreateBatch(objects){return new Promise(resolve=>{pendingCreate=resolve;socket.emit('daemonCreateObjectsRequest',{objects})})}
+async function plant(){if(!authed||creating)return;let built;try{built=buildLandscape()}catch(e){els.status.textContent=e.message;return}if(built.objects.length>MAX_DAEMON_OBJECTS){els.status.textContent=`Generated ${built.objects.length} primitives, above the ${MAX_DAEMON_OBJECTS} limit. Reduce count.`;return}creating=true;createdTotal=0;expectedTotal=built.objects.length;updateEstimate();els.clear.disabled=true;els.status.textContent=`Planting ${els.count.value} features as ${expectedTotal} primitives…`;for(let i=0;i<built.objects.length;i+=BATCH){const batch=built.objects.slice(i,i+BATCH);const result=await sendCreateBatch(batch);if(!result?.ok){els.status.textContent=`Stopped after ${createdTotal}: ${result?.reason||'create failed'}`;creating=false;els.clear.disabled=!authed;updateEstimate();return}createdTotal+=result.createdCount||0;els.status.textContent=`Planted ${createdTotal}/${expectedTotal} primitives…`}creating=false;els.clear.disabled=!authed;updateEstimate();els.status.textContent=`Done. ${els.count.value} features / ${createdTotal} primitives across radius ${built.radius} m.\nSeed: ${built.seed}`}
+function applyPreset(){const p=els.preset.value,vals={balanced:[35,35,22,8,90,180],forest:[58,30,9,3,100,220],scrub:[12,54,30,4,120,300],ruins:[12,18,28,42,90,260],stones:[5,15,72,8,150,320]}[p];[els.tree.value,els.plant.value,els.stone.value,els.artifact.value,els.count.value,els.radius.value]=vals.map(String);syncLabels()}
+els.preset.addEventListener('change',applyPreset);els.authBtn.addEventListener('click',()=>socket.emit('daemonHello',{daemonType:'alienLandscape',authCue:els.authCue.value}));els.spawn.addEventListener('click',plant);els.clear.addEventListener('click',()=>{if(!authed||creating)return;socket.emit('daemonDestroyObjectsRequest',{ownedOnly:true});els.status.textContent='Removing alien landscape objects…'});
+socket.on('connect',()=>els.status.textContent='Connected. Authenticate to plant.');socket.on('worldState',s=>{lastState=s;updateTargets(s)});socket.on('daemonAuthResult',r=>{authed=!!r.ok;els.authStatus.textContent=authed?'Authenticated as alienLandscape':'Auth failed';els.clear.disabled=!authed;updateEstimate();if(authed)socket.emit('requestWorldSnapshot')});socket.on('daemonCreateObjectsResult',r=>{if(pendingCreate){const done=pendingCreate;pendingCreate=null;done(r)}});socket.on('daemonDestroyObjectsResult',r=>{els.status.textContent=r.ok?`Removed ${r.destroyedCount||0} alien landscape primitives.`:`Remove failed: ${r.reason||'error'}`});socket.on('daemonTrigger',e=>{if(e&&String(e.triggerId||'').startsWith('alien:'))els.triggerLog.textContent=JSON.stringify(e,null,2)});
+syncLabels();
+</script>
+</body>
+</html>
