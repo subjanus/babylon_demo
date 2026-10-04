@@ -345,16 +345,9 @@ export function createGestureLab({ canvas, camera, scene, onStatus = () => {}, o
     history.push({ kind: 'finger', ...g });
     if (history.length > 200) history.shift();
     if (session) session.completedGestures.push(g);
-
-    // Let the host game attach meaning to a completed gesture without making
-    // Gesture Lab responsible for game rules.  For example, main.js can turn
-    // a one-finger swipe into a center-view object selection.
     if (!cancelled) {
-      try { onGestureComplete(g); } catch (err) {
-        console.warn('Gesture completion handler failed', err);
-      }
+      try { onGestureComplete(g); } catch (err) { console.warn('Gesture completion handler failed', err); }
     }
-
     active.delete(e.pointerId);
     noteTransition(cancelled ? 'cancel' : 'up');
     updateSessionMetrics();

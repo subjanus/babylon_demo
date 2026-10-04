@@ -29,76 +29,25 @@ horizonMat.alpha = 0.55;
 horizonMat.disableLighting = true;
 horizonRing.material = horizonMat;
 horizonRing.isPickable = false;
-// Torus is already in the ground plane here; leave it level for a true horizon guide.
 horizonRing.parent = horizonRoot;
 
-// CARDINAL HORIZON MARKERS --------------------------------------------------
-// Keep these deliberately small.  Shape + color are both unique so direction
-// remains readable in bright light and does not depend on color alone.
-// World convention here is -Z = north, +X = east, +Z = south, -X = west.
+// Four compact cardinal markers: shape + color are both unique.
 const cardinalRadius = 9.25;
-
-// North: compact warm cone / arrowhead.
-const northTick = BABYLON.MeshBuilder.CreateCylinder(
-  "northTick",
-  { height: 0.68, diameterTop: 0.0, diameterBottom: 0.34, tessellation: 12 },
-  scene
-);
-const northMat = new BABYLON.StandardMaterial("northMat", scene);
-northMat.emissiveColor = BABYLON.Color3.FromHexString("#FF5A36");
-northMat.alpha = 0.94;
-northMat.disableLighting = true;
-northTick.material = northMat;
-northTick.position.set(0, 0, -cardinalRadius);
-northTick.parent = horizonRoot;
-northTick.isPickable = false;
-
-// East: cool cyan tangent bar.
-const eastTick = BABYLON.MeshBuilder.CreateBox(
-  "eastTick",
-  { width: 0.16, height: 0.18, depth: 0.72 },
-  scene
-);
-const eastMat = new BABYLON.StandardMaterial("eastMat", scene);
-eastMat.emissiveColor = BABYLON.Color3.FromHexString("#27D3FF");
-eastMat.alpha = 0.90;
-eastMat.disableLighting = true;
-eastTick.material = eastMat;
-eastTick.position.set(cardinalRadius, 0, 0);
-eastTick.parent = horizonRoot;
-eastTick.isPickable = false;
-
-// South: small green bead.
-const southTick = BABYLON.MeshBuilder.CreateSphere(
-  "southTick",
-  { diameter: 0.38, segments: 12 },
-  scene
-);
-const southMat = new BABYLON.StandardMaterial("southMat", scene);
-southMat.emissiveColor = BABYLON.Color3.FromHexString("#58E36D");
-southMat.alpha = 0.92;
-southMat.disableLighting = true;
-southTick.material = southMat;
-southTick.position.set(0, 0, cardinalRadius);
-southTick.parent = horizonRoot;
-southTick.isPickable = false;
-
-// West: violet four-sided diamond.  A square cylinder gives us a distinct
-// faceted silhouette without adding textures or GUI labels.
-const westTick = BABYLON.MeshBuilder.CreateCylinder(
-  "westTick",
-  { height: 0.46, diameter: 0.44, tessellation: 4 },
-  scene
-);
-const westMat = new BABYLON.StandardMaterial("westMat", scene);
-westMat.emissiveColor = BABYLON.Color3.FromHexString("#C084FC");
-westMat.alpha = 0.92;
-westMat.disableLighting = true;
-westTick.material = westMat;
-westTick.rotation.y = Math.PI / 4;
-westTick.position.set(-cardinalRadius, 0, 0);
-westTick.parent = horizonRoot;
-westTick.isPickable = false;
+function cardinalMat(name, hex) {
+  const m = new BABYLON.StandardMaterial(name, scene);
+  m.emissiveColor = BABYLON.Color3.FromHexString(hex);
+  m.alpha = 0.92;
+  m.disableLighting = true;
+  return m;
+}
+const northTick = BABYLON.MeshBuilder.CreateCylinder("northTick", { height: 0.68, diameterTop: 0, diameterBottom: 0.34, tessellation: 12 }, scene);
+northTick.material = cardinalMat("northMat", "#FF5A36"); northTick.position.set(0,0,-cardinalRadius); northTick.parent=horizonRoot; northTick.isPickable=false;
+const eastTick = BABYLON.MeshBuilder.CreateBox("eastTick", { width:0.16, height:0.18, depth:0.72 }, scene);
+eastTick.material = cardinalMat("eastMat", "#27D3FF"); eastTick.position.set(cardinalRadius,0,0); eastTick.parent=horizonRoot; eastTick.isPickable=false;
+const southTick = BABYLON.MeshBuilder.CreateSphere("southTick", { diameter:0.38, segments:12 }, scene);
+southTick.material = cardinalMat("southMat", "#58E36D"); southTick.position.set(0,0,cardinalRadius); southTick.parent=horizonRoot; southTick.isPickable=false;
+const westTick = BABYLON.MeshBuilder.CreateCylinder("westTick", { height:0.46, diameter:0.44, tessellation:4 }, scene);
+westTick.material = cardinalMat("westMat", "#C084FC"); westTick.rotation.y=Math.PI/4; westTick.position.set(-cardinalRadius,0,0); westTick.parent=horizonRoot; westTick.isPickable=false;
 
 // SYMBOLIC CALIBRATION v1 ---------------------------------------------------
 // These two objects deliberately do NOT depend on GPS/worldRoot. They stay
@@ -649,58 +598,64 @@ function mkButton(stack, id, label, onClick) {
   return b;
 }
 
-// Tiny synthesized UI feedback.  No audio files are needed: the browser makes
-// the sound with Web Audio.  iOS requires AudioContext creation/resume to occur
-// during a real user gesture, so pointerdown primes it and selection merely uses it.
 let uiAudioCtx = null;
 function ensureUiAudio() {
   try {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtx) return null;
-    if (!uiAudioCtx) uiAudioCtx = new AudioCtx();
-    if (uiAudioCtx.state === "suspended") uiAudioCtx.resume().catch(() => {});
+    const C = window.AudioContext || window.webkitAudioContext;
+    if (!C) return null;
+    if (!uiAudioCtx) uiAudioCtx = new C();
+    if (uiAudioCtx.state === "suspended") uiAudioCtx.resume().catch(()=>{});
     return uiAudioCtx;
-  } catch (_) {
-    return null;
-  }
+  } catch (_) { return null; }
 }
-
 function playSelectionSound() {
-  const ctx = ensureUiAudio();
-  if (!ctx || ctx.state === "closed") return;
+  const ctx = ensureUiAudio(); if (!ctx) return;
   const now = ctx.currentTime;
   try {
-    const master = ctx.createGain();
-    master.gain.setValueAtTime(0.0001, now);
-    master.gain.exponentialRampToValueAtTime(0.12, now + 0.008);
-    master.gain.exponentialRampToValueAtTime(0.0001, now + 0.095);
-    master.connect(ctx.destination);
-
-    const low = ctx.createOscillator();
-    low.type = "sine";
-    low.frequency.setValueAtTime(560, now);
-    low.frequency.exponentialRampToValueAtTime(700, now + 0.07);
-    low.connect(master);
-
-    const highGain = ctx.createGain();
-    highGain.gain.value = 0.32;
-    highGain.connect(master);
-    const high = ctx.createOscillator();
-    high.type = "triangle";
-    high.frequency.setValueAtTime(840, now);
-    high.frequency.exponentialRampToValueAtTime(1040, now + 0.055);
-    high.connect(highGain);
-
-    low.start(now);
-    high.start(now + 0.006);
-    low.stop(now + 0.10);
-    high.stop(now + 0.075);
+    const g=ctx.createGain(); g.gain.setValueAtTime(.0001,now); g.gain.exponentialRampToValueAtTime(.11,now+.008); g.gain.exponentialRampToValueAtTime(.0001,now+.09); g.connect(ctx.destination);
+    const o=ctx.createOscillator(); o.type="sine"; o.frequency.setValueAtTime(560,now); o.frequency.exponentialRampToValueAtTime(920,now+.07); o.connect(g); o.start(now); o.stop(now+.095);
   } catch (_) {}
 }
+canvas.addEventListener("pointerdown", () => ensureUiAudio(), { passive:true });
 
-// Prime Web Audio on the first genuine touch/click.  This is intentionally
-// passive so it does not interfere with Babylon or Gesture Lab pointer handling.
-canvas.addEventListener("pointerdown", () => { ensureUiAudio(); }, { passive: true });
+// Local-only AR camera background. Camera pixels never leave this browser.
+let arStream = null;
+let arVideo = null;
+let arTexture = null;
+let arLayer = null;
+let arEnabled = false;
+async function setArCameraEnabled(on) {
+  if (!on) {
+    arEnabled = false;
+    if (arLayer) arLayer.isEnabled = false;
+    if (arStream) { for (const t of arStream.getTracks()) t.stop(); arStream = null; }
+    if (arVideo) { try { arVideo.pause(); arVideo.srcObject = null; } catch (_) {} }
+    setStatus("AR camera off");
+    return false;
+  }
+  if (!navigator.mediaDevices?.getUserMedia) { setStatus("Camera API unavailable"); return false; }
+  try {
+    if (!arVideo) {
+      arVideo = document.createElement("video");
+      arVideo.autoplay = true; arVideo.muted = true; arVideo.playsInline = true;
+    }
+    arStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:"environment" } }, audio:false });
+    arVideo.srcObject = arStream;
+    await arVideo.play();
+    if (arTexture) { try { arTexture.dispose(); } catch (_) {} }
+    arTexture = new BABYLON.VideoTexture("arCameraTexture", arVideo, scene, false, false, BABYLON.Texture.BILINEAR_SAMPLINGMODE);
+    arTexture.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE; arTexture.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
+    if (!arLayer) arLayer = new BABYLON.Layer("arCameraLayer", null, scene, true);
+    arLayer.texture = arTexture; arLayer.isEnabled = true;
+    arEnabled = true;
+    setStatus("AR camera on | live video stays on this device");
+    return true;
+  } catch (err) {
+    arEnabled = false;
+    setStatus(`Camera blocked: ${err?.name || "permission denied"}`);
+    return false;
+  }
+}
 
 let gestureLab = null;
 let motionLab = null;
@@ -732,11 +687,8 @@ function initGestureLabOnce() {
     onStatus: (msg) => setStatus(msg),
     onGestureComplete: (g) => {
       if (!g || g.cancelled || (g.sessionMaxFingers || 1) > 1) return;
-      if (g.type === "swipe" || g.type === "flick") {
-        selectObjectInFront();
-      } else if (g.type === "tap") {
-        selectObjectAtClientPoint(g.endX, g.endY);
-      }
+      if (g.type === "swipe" || g.type === "flick") selectObjectInFront();
+      else if (g.type === "tap") selectObjectAtClientPoint(g.endX, g.endY);
     }
   });
   return gestureLab;
@@ -773,257 +725,49 @@ function disableMotionCamera() {
 
 function createDrawerUI() {
   const adt = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("ui", true, scene);
-
-  function makeToggle(name, label, side) {
-    const b = BABYLON.GUI.Button.CreateSimpleButton(name, label);
-    b.width = "44px";
-    b.height = "44px";
-    b.color = "#e6edf3";
-    b.background = "#111827";
-    b.cornerRadius = 12;
-    b.thickness = 1;
-    b.top = "10px";
-    b.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
-    if (side === "left") {
-      b.left = "10px";
-      b.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-    } else {
-      b.left = "-10px";
-      b.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
-    }
-    adt.addControl(b);
-    return b;
+  function toggleButton(name,label,side){
+    const b=BABYLON.GUI.Button.CreateSimpleButton(name,label); b.width="44px"; b.height="44px"; b.color="#e6edf3"; b.background="#111827"; b.cornerRadius=12; b.thickness=1; b.top="10px"; b.verticalAlignment=BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
+    if(side==="left"){b.left="10px";b.horizontalAlignment=BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT}else{b.left="-10px";b.horizontalAlignment=BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT} adt.addControl(b); return b;
   }
-
-  function makeDrawer(name, titleText, side, heightPx) {
-    const drawer = new BABYLON.GUI.Rectangle(name);
-    drawer.width = "340px";
-    drawer.height = `${heightPx}px`;
-    drawer.thickness = 1;
-    drawer.cornerRadius = 16;
-    drawer.color = "#334155";
-    drawer.background = "#0b1220ee";
-    drawer.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
-    drawer.top = "10px";
-    if (side === "left") {
-      drawer.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-      drawer.left = "10px";
-    } else {
-      drawer.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
-      drawer.left = "-10px";
-    }
-    adt.addControl(drawer);
-
-    const root = new BABYLON.GUI.StackPanel(`${name}Root`);
-    root.width = 0.94;
-    root.paddingTop = "10px";
-    root.paddingLeft = "10px";
-    root.paddingRight = "10px";
-    drawer.addControl(root);
-
-    const headerRow = new BABYLON.GUI.StackPanel(`${name}HeaderRow`);
-    headerRow.isVertical = false;
-    headerRow.height = "34px";
-    root.addControl(headerRow);
-
-    const title = new BABYLON.GUI.TextBlock(`${name}Title`, titleText);
-    title.color = "#e6edf3";
-    title.fontSize = 18;
-    title.height = "34px";
-    title.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-    title.resizeToFit = true;
-    headerRow.addControl(title);
-
-    const close = BABYLON.GUI.Button.CreateSimpleButton(`${name}Close`, "×");
-    close.width = "34px";
-    close.height = "34px";
-    close.color = "#e6edf3";
-    close.background = "#111827";
-    close.thickness = 1;
-    close.cornerRadius = 10;
-    close.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
-    headerRow.addControl(close);
-
-    return { drawer, root, close, side, heightPx };
+  function drawerPanel(name,titleText,side,height){
+    const d=new BABYLON.GUI.Rectangle(name); d.width="340px";d.height=`${height}px`;d.thickness=1;d.cornerRadius=16;d.color="#334155";d.background="#0b1220ee";d.top="10px";d.verticalAlignment=BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
+    if(side==="left"){d.left="10px";d.horizontalAlignment=BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT}else{d.left="-10px";d.horizontalAlignment=BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT} adt.addControl(d);
+    const root=new BABYLON.GUI.StackPanel(name+"Root");root.width=.94;root.paddingTop="10px";root.paddingLeft="10px";root.paddingRight="10px";d.addControl(root);
+    const row=new BABYLON.GUI.StackPanel(name+"Header");row.isVertical=false;row.height="34px";root.addControl(row);
+    const title=new BABYLON.GUI.TextBlock(name+"Title",titleText);title.color="#e6edf3";title.fontSize=18;title.height="34px";title.resizeToFit=true;title.textHorizontalAlignment=BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;row.addControl(title);
+    const close=BABYLON.GUI.Button.CreateSimpleButton(name+"Close","×");close.width="34px";close.height="34px";close.color="#e6edf3";close.background="#111827";close.thickness=1;close.cornerRadius=10;close.horizontalAlignment=BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;row.addControl(close);
+    return {drawer:d,root,close,height};
   }
+  const leftToggle=toggleButton("navDrawerToggle","☰","left");
+  const rightToggle=toggleButton("toolsDrawerToggle","⚙","right");
+  const nav=drawerPanel("navDrawer","Navigation","left",550);
+  const tools=drawerPanel("toolsDrawer","World / AR Tools","right",500);
+  nav.drawer.isVisible=true; tools.drawer.isVisible=false;
 
-  const leftToggle = makeToggle("navDrawerToggle", "☰", "left");
-  const rightToggle = makeToggle("toolsDrawerToggle", "⚙", "right");
-  const nav = makeDrawer("navDrawer", "Navigation", "left", 550);
-  const tools = makeDrawer("toolsDrawer", "World Tools", "right", 410);
+  uiStatusText=new BABYLON.GUI.TextBlock("uiStatus","Connecting…");uiStatusText.color="#e6edf3";uiStatusText.fontSize=12;uiStatusText.height="34px";uiStatusText.textWrapping=true;uiStatusText.textHorizontalAlignment=BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;nav.root.addControl(uiStatusText);
+  uiCountsText=new BABYLON.GUI.TextBlock("uiCounts","Users: 0 | Objects: 0 | Deleted: 0");uiCountsText.color="#cbd5e1";uiCountsText.fontSize=12;uiCountsText.height="28px";uiCountsText.textHorizontalAlignment=BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;nav.root.addControl(uiCountsText);
+  uiSelectedText=new BABYLON.GUI.TextBlock("uiSelected","Selected: none");uiSelectedText.color="#cbd5e1";uiSelectedText.fontSize=12;uiSelectedText.height="40px";uiSelectedText.textWrapping=true;uiSelectedText.textHorizontalAlignment=BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;nav.root.addControl(uiSelectedText);
+  const sep=new BABYLON.GUI.Rectangle("navSep");sep.height="1px";sep.thickness=0;sep.background="#1f2937";nav.root.addControl(sep);
+  anchorSummaryText=new BABYLON.GUI.TextBlock("anchorSummary","Anchor: 0.000000, 0.000000");anchorSummaryText.color="#93c5fd";anchorSummaryText.fontSize=12;anchorSummaryText.height="24px";anchorSummaryText.textHorizontalAlignment=BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;nav.root.addControl(anchorSummaryText);
+  anchorInput=mkInput(nav.root,"anchorInput","Anchor Lat,Lon",formatAnchorText(anchorLat,anchorLon));
+  mkButton(nav.root,"uiSetAnchor","Set Anchor",()=>{const parsed=parseAnchorText(anchorInput?.text);if(!parsed){setStatus("Anchor format: lat,lon");return}applyAnchor(parsed.lat,parsed.lon)});
+  mkButton(nav.root,"uiPasteAnchor","Paste Anchor",async()=>{try{const text=await navigator.clipboard.readText();const parsed=parseAnchorText(text);if(!parsed){setStatus("Clipboard needs: lat,lon");return}applyAnchor(parsed.lat,parsed.lon)}catch(_){setStatus("Clipboard paste blocked")}});
+  mkButton(nav.root,"uiUseGpsAnchor","Use My GPS as Anchor",()=>{if(isNumber(rawLat)&&isNumber(rawLon))applyAnchor(rawLat,rawLon)});
+  bFollow=mkButton(nav.root,"uiFollow","Follow: On",()=>{followMe=!followMe;bFollow.textBlock.text=followMe?"Follow: On":"Follow: Off";if(!followMe){worldRoot.position.x=0;worldRoot.position.z=0}});
+  bNorth=mkButton(nav.root,"uiNorth","Lock North: Off",()=>{lockNorth=!lockNorth;yawSmoothed=getCameraYawRad();yawZero=yawSmoothed;bNorth.textBlock.text=lockNorth?"Lock North: On":"Lock North: Off"});
+  mkButton(nav.root,"uiPerm","Enable Motion",async(btn)=>{if(motionEnabled){disableMotionCamera();btn.textBlock.text="Enable Motion";setStatus("Motion disabled | finger camera restored");return}const ok=await requestDevicePermissions();motionEnabled=!!ok;pitchZeroDeg=null;btn.textBlock.text=ok?"Motion Enabled (tap to disable)":"Motion Blocked";if(!ok)return;syncCameraControlMode();camera.rotationQuaternion=camera.rotationQuaternion||BABYLON.Quaternion.Identity();setStatus("Motion enabled | phone owns camera")});
 
-  // Keep startup familiar but uncluttered: navigation/status is open; tools wait
-  // on the opposite edge. On narrow phones, opening one drawer closes the other.
-  nav.drawer.isVisible = true;
-  tools.drawer.isVisible = false;
+  mkButton(tools.root,"uiColor","Toggle Color",()=>socket.emit("toggleColor"));
+  mkButton(tools.root,"uiDrop","Drop Cube",()=>{const rel=currentRel();if(!rel)return;socket.emit("dropCube",{anchorLat,anchorLon,relX:rel.x,relY:0,relZ:rel.z})});
+  uiDeleteBtn=mkButton(tools.root,"uiDelete","Delete Selected",attemptDeleteSelected);uiDeleteBtn.isEnabled=false;uiDeleteBtn.alpha=.5;
+  const bAr=mkButton(tools.root,"uiARCamera","AR Camera: Off",async(btn)=>{const on=await setArCameraEnabled(!arEnabled);btn.textBlock.text=on?"AR Camera: On":"AR Camera: Off"});
+  const bGesture=mkButton(tools.root,"uiGestureLab","Gesture Lab: Off",(btn)=>{const lab=initGestureLabOnce();const on=lab.setEnabled(!lab.isEnabled());syncCameraControlMode();btn.textBlock.text=on?"Gesture Lab: On":"Gesture Lab: Off"});
+  mkButton(tools.root,"uiMotionLab","Motion Lab: Off",(btn)=>{const lab=initMotionLabOnce();const on=lab.setEnabled(!lab.isEnabled());btn.textBlock.text=on?"Motion Lab: On":"Motion Lab: Off"});
+  const help=new BABYLON.GUI.TextBlock("helpText","AR Camera is local-only. Swipe/Flick (Gesture Lab) selects the object centered in front of the camera. Hosted object textures can now use visual.imageUrl.");help.height="90px";help.textWrapping=true;help.fontSize=11;help.color="#94a3b8";help.textHorizontalAlignment=BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;tools.root.addControl(help);
 
-  uiStatusText = new BABYLON.GUI.TextBlock("uiStatus", "Connecting…");
-  uiStatusText.color = "#e6edf3";
-  uiStatusText.fontSize = 12;
-  uiStatusText.height = "34px";
-  uiStatusText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  uiStatusText.textWrapping = true;
-  nav.root.addControl(uiStatusText);
-
-  uiCountsText = new BABYLON.GUI.TextBlock("uiCounts", "Users: 0 | Objects: 0 | Deleted: 0");
-  uiCountsText.color = "#cbd5e1";
-  uiCountsText.fontSize = 12;
-  uiCountsText.height = "28px";
-  uiCountsText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  nav.root.addControl(uiCountsText);
-
-  uiSelectedText = new BABYLON.GUI.TextBlock("uiSelected", "Selected: none");
-  uiSelectedText.color = "#cbd5e1";
-  uiSelectedText.fontSize = 12;
-  uiSelectedText.height = "40px";
-  uiSelectedText.textWrapping = true;
-  uiSelectedText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  nav.root.addControl(uiSelectedText);
-
-  const sep = new BABYLON.GUI.Rectangle("navSep");
-  sep.height = "1px";
-  sep.thickness = 0;
-  sep.background = "#1f2937";
-  nav.root.addControl(sep);
-
-  anchorSummaryText = new BABYLON.GUI.TextBlock("anchorSummary", "Anchor: 0.000000, 0.000000");
-  anchorSummaryText.color = "#93c5fd";
-  anchorSummaryText.fontSize = 12;
-  anchorSummaryText.height = "24px";
-  anchorSummaryText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  nav.root.addControl(anchorSummaryText);
-
-  anchorInput = mkInput(nav.root, "anchorInput", "Anchor Lat,Lon", formatAnchorText(anchorLat, anchorLon));
-
-  mkButton(nav.root, "uiSetAnchor", "Set Anchor", () => {
-    const parsed = parseAnchorText(anchorInput?.text);
-    if (!parsed) {
-      setStatus("Anchor format: lat,lon");
-      emitTelemetry("ui", { action: "setAnchorInvalid", value: anchorInput?.text || "" });
-      return;
-    }
-    applyAnchor(parsed.lat, parsed.lon);
-    emitTelemetry("ui", { action: "setAnchor", anchorLat, anchorLon });
-  });
-
-  mkButton(nav.root, "uiPasteAnchor", "Paste Anchor", async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      const parsed = parseAnchorText(text);
-      if (!parsed) {
-        setStatus("Clipboard needs: lat,lon");
-        emitTelemetry("ui", { action: "pasteAnchorInvalid", value: String(text || "").slice(0, 120) });
-        return;
-      }
-      applyAnchor(parsed.lat, parsed.lon);
-      emitTelemetry("ui", { action: "pasteAnchor", anchorLat, anchorLon });
-    } catch (_) {
-      setStatus("Clipboard paste blocked");
-      emitTelemetry("ui", { action: "pasteAnchorBlocked" });
-    }
-  });
-
-  mkButton(nav.root, "uiUseGpsAnchor", "Use My GPS as Anchor", () => {
-    if (isNumber(rawLat) && isNumber(rawLon)) {
-      applyAnchor(rawLat, rawLon);
-      emitTelemetry("ui", { action: "useGpsAnchor", anchorLat, anchorLon });
-    }
-  });
-
-  bFollow = mkButton(nav.root, "uiFollow", "Follow: On", () => {
-    followMe = !followMe;
-    bFollow.textBlock.text = followMe ? "Follow: On" : "Follow: Off";
-    if (!followMe) {
-      worldRoot.position.x = 0;
-      worldRoot.position.z = 0;
-    }
-  });
-
-  bNorth = mkButton(nav.root, "uiNorth", "Lock North: Off", () => {
-    lockNorth = !lockNorth;
-    yawSmoothed = getCameraYawRad();
-    yawZero = yawSmoothed;
-    bNorth.textBlock.text = lockNorth ? "Lock North: On" : "Lock North: Off";
-  });
-
-  mkButton(nav.root, "uiPerm", "Enable Motion", async (btn) => {
-    if (motionEnabled) {
-      disableMotionCamera();
-      btn.textBlock.text = "Enable Motion";
-      setStatus("Motion disabled | finger camera restored");
-      return;
-    }
-
-    const ok = await requestDevicePermissions();
-    motionEnabled = !!ok;
-    pitchZeroDeg = null;
-    btn.textBlock.text = ok ? "Motion Enabled (tap to disable)" : "Motion Blocked";
-    if (!ok) return;
-
-    syncCameraControlMode();
-    camera.rotationQuaternion = camera.rotationQuaternion || BABYLON.Quaternion.Identity();
-    setStatus("Motion enabled | phone owns camera; finger-look disabled");
-  });
-
-  mkButton(tools.root, "uiColor", "Toggle Color", () => socket.emit("toggleColor"));
-  mkButton(tools.root, "uiDrop", "Drop Cube", () => {
-    const rel = currentRel();
-    if (!rel) return;
-    socket.emit("dropCube", { anchorLat, anchorLon, relX: rel.x, relY: 0, relZ: rel.z });
-    emitTelemetry("drop", { relX: rel.x, relZ: rel.z });
-  });
-
-  uiDeleteBtn = mkButton(tools.root, "uiDelete", "Delete Selected", attemptDeleteSelected);
-  uiDeleteBtn.isEnabled = false;
-  uiDeleteBtn.alpha = 0.5;
-
-  const bGesture = mkButton(tools.root, "uiGestureLab", "Gesture Lab: Off", (btn) => {
-    const lab = initGestureLabOnce();
-    const on = lab.setEnabled(!lab.isEnabled());
-    syncCameraControlMode();
-    btn.textBlock.text = on ? "Gesture Lab: On" : "Gesture Lab: Off";
-  });
-
-  const bMotionLab = mkButton(tools.root, "uiMotionLab", "Motion Lab: Off", (btn) => {
-    const lab = initMotionLabOnce();
-    const on = lab.setEnabled(!lab.isEnabled());
-    btn.textBlock.text = on ? "Motion Lab: On" : "Motion Lab: Off";
-  });
-
-  const help = new BABYLON.GUI.TextBlock(
-    "helpText",
-    "Swipe/Flick (Gesture Lab): selects the object directly in front of the camera and fires the same tap behavior. Selection sound is synthesized locally with Web Audio."
-  );
-  help.height = "78px";
-  help.textWrapping = true;
-  help.fontSize = 11;
-  help.color = "#94a3b8";
-  help.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  tools.root.addControl(help);
-
-  function narrowScreen() { return window.innerWidth < 760; }
-  function setNavOpen(open) {
-    nav.drawer.isVisible = open;
-    if (open && narrowScreen()) tools.drawer.isVisible = false;
-  }
-  function setToolsOpen(open) {
-    tools.drawer.isVisible = open;
-    if (open && narrowScreen()) nav.drawer.isVisible = false;
-  }
-
-  leftToggle.onPointerUpObservable.add(() => setNavOpen(!nav.drawer.isVisible));
-  rightToggle.onPointerUpObservable.add(() => setToolsOpen(!tools.drawer.isVisible));
-  nav.close.onPointerUpObservable.add(() => setNavOpen(false));
-  tools.close.onPointerUpObservable.add(() => setToolsOpen(false));
-
-  return {
-    leftDrawer: nav.drawer,
-    rightDrawer: tools.drawer,
-    leftToggle,
-    rightToggle,
-    leftDrawerHeight: nav.heightPx,
-    rightDrawerHeight: tools.heightPx
-  };
+  function narrow(){return window.innerWidth<760} function openNav(on){nav.drawer.isVisible=on;if(on&&narrow())tools.drawer.isVisible=false} function openTools(on){tools.drawer.isVisible=on;if(on&&narrow())nav.drawer.isVisible=false}
+  leftToggle.onPointerUpObservable.add(()=>openNav(!nav.drawer.isVisible));rightToggle.onPointerUpObservable.add(()=>openTools(!tools.drawer.isVisible));nav.close.onPointerUpObservable.add(()=>openNav(false));tools.close.onPointerUpObservable.add(()=>openTools(false));
+  return {leftDrawer:nav.drawer,rightDrawer:tools.drawer,leftDrawerHeight:nav.height,rightDrawerHeight:tools.height,leftToggle,rightToggle};
 }
 
 const ui = createDrawerUI();
@@ -1033,28 +777,12 @@ updateAnchorSummary();
 
 function isPointerOverDrawerUI(evt) {
   if (!evt) return false;
-  const w = window.innerWidth;
-  const x = evt.clientX;
-  const y = evt.clientY;
-  const margin = 10;
-  const toggleSize = 44;
-  const drawerWidth = 340;
-
-  const overLeftToggle = x >= margin && x <= margin + toggleSize && y >= margin && y <= margin + toggleSize;
-  const overRightToggle = x >= w - margin - toggleSize && x <= w - margin && y >= margin && y <= margin + toggleSize;
-  let overLeftDrawer = false;
-  let overRightDrawer = false;
-
-  try {
-    if (ui?.leftDrawer?.isVisible) {
-      overLeftDrawer = x >= margin && x <= margin + drawerWidth && y >= margin && y <= margin + (ui.leftDrawerHeight || 550);
-    }
-    if (ui?.rightDrawer?.isVisible) {
-      overRightDrawer = x >= w - margin - drawerWidth && x <= w - margin && y >= margin && y <= margin + (ui.rightDrawerHeight || 410);
-    }
-  } catch (_) {}
-
-  return overLeftToggle || overRightToggle || overLeftDrawer || overRightDrawer;
+  const w=window.innerWidth,x=evt.clientX,y=evt.clientY,margin=10,toggleSize=44,drawerWidth=340;
+  const leftToggle=x>=margin&&x<=margin+toggleSize&&y>=margin&&y<=margin+toggleSize;
+  const rightToggle=x>=w-margin-toggleSize&&x<=w-margin&&y>=margin&&y<=margin+toggleSize;
+  let left=false,right=false;
+  try{if(ui?.leftDrawer?.isVisible)left=x>=margin&&x<=margin+drawerWidth&&y>=margin&&y<=margin+(ui.leftDrawerHeight||550);if(ui?.rightDrawer?.isVisible)right=x>=w-margin-drawerWidth&&x<=w-margin&&y>=margin&&y<=margin+(ui.rightDrawerHeight||500)}catch(_){}
+  return leftToggle||rightToggle||left||right;
 }
 
 function ensurePlayerPointer(id, color) {
@@ -1113,15 +841,26 @@ function buildMeshForObject(obj) {
   }
 
   const mat = new BABYLON.StandardMaterial(`mat_${obj.id}`, scene);
-  mat.diffuseColor = BABYLON.Color3.FromHexString(obj.visual?.color || "#00A3FF");
-  mat.emissiveColor = kind === "triggerZone" ? BABYLON.Color3.FromHexString(obj.visual?.color || "#00A3FF").scale(0.4) : BABYLON.Color3.Black();
+  const baseColor = BABYLON.Color3.FromHexString(obj.visual?.color || "#00A3FF");
+  mat.diffuseColor = baseColor;
+  mat.emissiveColor = kind === "triggerZone" ? baseColor.scale(0.4) : BABYLON.Color3.Black();
   mat.specularColor = BABYLON.Color3.Black();
   mat.alpha = typeof obj.visual?.opacity === "number" ? obj.visual.opacity : 1;
   mat.wireframe = !!obj.visual?.wireframe;
+  mat.backFaceCulling = false;
+  if (obj.visual?.imageUrl) {
+    const tex = new BABYLON.Texture(obj.visual.imageUrl, scene, true, false, BABYLON.Texture.TRILINEAR_SAMPLINGMODE);
+    tex.hasAlpha = true;
+    mat.diffuseTexture = tex;
+    mat.opacityTexture = tex;
+    mat.emissiveTexture = tex;
+    mat.emissiveColor = BABYLON.Color3.White();
+    mat.useAlphaFromDiffuseTexture = true;
+  }
   mesh.material = mat;
   mesh.parent = worldRoot;
-  mesh.isPickable = true;
-  if (obj.kind === "billboard" || obj.visual?.billboard) mesh.billboardMode = BABYLON.Mesh.BILLBOARDMODE_Y;
+  mesh.isPickable = obj.metadata?.selectable !== false;
+  if (obj.kind === "billboard" || obj.visual?.billboard) mesh.billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL;
   mesh.metadata = { kind: "worldObject", objectId: obj.id };
 
   if (obj.visual?.label) {
@@ -1176,36 +915,18 @@ function setSelection(mesh) {
   maybeEmitTapTrigger(selectedObjectId);
 }
 
-function isSelectableMesh(mesh) {
-  return !!mesh?.metadata?.kind;
-}
-
+function isSelectableMesh(mesh) { return !!mesh?.metadata?.kind && mesh.isPickable !== false; }
 function selectObjectAtClientPoint(clientX, clientY) {
   if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return clearSelection();
-  const rect = canvas.getBoundingClientRect();
-  const x = clientX - rect.left;
-  const y = clientY - rect.top;
-  const pick = scene.pick(x, y, (mesh) => isSelectableMesh(mesh));
-  if (pick?.hit && pick.pickedMesh) setSelection(pick.pickedMesh);
-  else clearSelection();
+  const rect=canvas.getBoundingClientRect();
+  const pick=scene.pick(clientX-rect.left,clientY-rect.top,(mesh)=>isSelectableMesh(mesh));
+  if (pick?.hit&&pick.pickedMesh) setSelection(pick.pickedMesh); else clearSelection();
 }
-
 function selectObjectInFront() {
-  // A forward ray makes the gesture target independent of where the finger
-  // finished.  The player's gaze/camera direction chooses the target.
-  let pick = null;
-  try {
-    const ray = camera.getForwardRay(250);
-    pick = scene.pickWithRay(ray, (mesh) => isSelectableMesh(mesh));
-  } catch (_) {}
-  if (pick?.hit && pick.pickedMesh) {
-    setSelection(pick.pickedMesh);
-    setStatus(`Swipe selected ${selectedLabel}`);
-    return pick.pickedMesh;
-  }
-  clearSelection();
-  setStatus("Swipe: nothing directly ahead");
-  return null;
+  let pick=null;
+  try{pick=scene.pickWithRay(camera.getForwardRay(250),(mesh)=>isSelectableMesh(mesh))}catch(_){}
+  if(pick?.hit&&pick.pickedMesh){setSelection(pick.pickedMesh);setStatus(`Swipe selected ${selectedLabel}`);return pick.pickedMesh}
+  clearSelection();setStatus("Swipe: nothing directly ahead");return null;
 }
 
 function updateSelectionHUD() {
@@ -1254,15 +975,10 @@ function maybeEmitTapTrigger(objectId) {
 scene.onPointerObservable.add((pi) => {
   if (pi.type !== BABYLON.PointerEventTypes.POINTERDOWN) return;
   if (isPointerOverDrawerUI(pi.event)) return;
-
-  // When Gesture Lab owns touch, it waits until pointer-up so a swipe does not
-  // accidentally select whatever happened to be under the finger at its start.
-  const gestureOwnsTouch = !!(gestureLab && gestureLab.isEnabled && gestureLab.isEnabled());
-  if (gestureOwnsTouch && pi.event?.pointerType !== "mouse") return;
-
-  const pick = scene.pick(scene.pointerX, scene.pointerY, (mesh) => isSelectableMesh(mesh));
-  if (pick && pick.hit && pick.pickedMesh) setSelection(pick.pickedMesh);
-  else clearSelection();
+  const gestureOwnsTouch=!!(gestureLab&&gestureLab.isEnabled&&gestureLab.isEnabled());
+  if(gestureOwnsTouch&&pi.event?.pointerType!=="mouse") return;
+  const pick=scene.pick(scene.pointerX,scene.pointerY,(mesh)=>isSelectableMesh(mesh));
+  if(pick&&pick.hit&&pick.pickedMesh)setSelection(pick.pickedMesh);else clearSelection();
 });
 
 function onGeo(lat, lon, coords) {
@@ -1376,10 +1092,41 @@ function reconcileWorld(state) {
     }
     const mesh = ensureObjectMesh(obj);
     mesh.setEnabled(true);
-    mesh.position.set(obj.position?.x || 0, (obj.position?.y || 0) + (obj.subtype === "droppedCube" ? DROPPED_CUBE_Y : 0), obj.position?.z || 0);
+
+    const actorSpace = obj.metadata?.space === "actor";
+    if (actorSpace) {
+      const actorId = String(obj.metadata?.actorId || "");
+      const actor = clients[actorId];
+      if (!actor || actor.anchorKey !== anchorKey || !isNumber(actor.relX) || !isNumber(actor.relZ)) {
+        mesh.setEnabled(false);
+        continue;
+      }
+      const att = obj.metadata?.attachment || {};
+      const off = att.offset || {};
+      let x = actor.relX + Number(off.x || 0);
+      let z = actor.relZ + Number(off.z || 0);
+      let y = Number(off.y ?? 2.8);
+
+      // A charm attached to *this* phone would otherwise be directly above the
+      // camera and mostly invisible. For self-view, place it a few meters in
+      // front while keeping it logically actor-bound.
+      if (actorId === socket.id && Number.isFinite(Number(att.selfForward))) {
+        const yaw = getCameraYawRad() - worldRoot.rotation.y;
+        const f = Number(att.selfForward);
+        x += Math.sin(yaw) * f;
+        z += Math.cos(yaw) * f;
+        y = camera.position.y + Number(att.selfUp ?? 0.25);
+      }
+      mesh.position.set(x, y, z);
+      mesh.metadata = { kind:"worldObject", objectId:obj.id, rel:{x:actor.relX,z:actor.relZ}, actorId };
+    } else {
+      mesh.position.set(obj.position?.x || 0, (obj.position?.y || 0) + (obj.subtype === "droppedCube" ? DROPPED_CUBE_Y : 0), obj.position?.z || 0);
+      mesh.metadata = { kind:"worldObject", objectId:obj.id, rel:{x:obj.position?.x || 0,z:obj.position?.z || 0} };
+    }
     mesh.rotation.set(obj.rotation?.x || 0, obj.rotation?.y || 0, obj.rotation?.z || 0);
     mesh.scaling.set(obj.scale?.x || 1, obj.scale?.y || 1, obj.scale?.z || 1);
-    mesh.metadata = { kind: "worldObject", objectId: obj.id, rel: { x: obj.position?.x || 0, z: obj.position?.z || 0 } };
+    mesh.metadata.baseScale = { x: obj.scale?.x || 1, y: obj.scale?.y || 1, z: obj.scale?.z || 1 };
+    mesh.metadata.pulse = !!obj.metadata?.pulse;
   }
 
   for (const id of Object.keys(objectMeshes)) {
@@ -1483,6 +1230,13 @@ engine.runRenderLoop(() => {
   maybeSendOrientationUpdate();
   updateLocalHorizon();
   updateSymbolicCalibration();
+  // Cheap client-side charm animation: one server object, no animation traffic.
+  const pulse = 1 + Math.sin(performance.now() * 0.004) * 0.045;
+  for (const mesh of Object.values(objectMeshes)) {
+    if (!mesh?.metadata?.pulse || !mesh.metadata.baseScale) continue;
+    const b = mesh.metadata.baseScale;
+    mesh.scaling.set(b.x * pulse, b.y * pulse, b.z * pulse);
+  }
   updateSelectionHUD();
   scene.render();
 });

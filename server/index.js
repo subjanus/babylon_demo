@@ -14,7 +14,7 @@ app.get("/", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
 app.get("/debug", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "debug.html")));
 app.get("/circles", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "circles.html")));
 app.get("/cleanup", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "cleanup.html")));
-app.get("/alien", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "alien-landscape.html")));
+app.get("/charm", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "charm.html")));
 
 const COLORS = ["#00A3FF", "#FFCC00", "#34D399", "#F472B6", "#F59E0B", "#22D3EE", "#A78BFA"];
 let nextColorIdx = 0;
@@ -30,7 +30,7 @@ const telemetry = [];
 
 const CIRCLE_AUTH_FILE = path.join(__dirname, "circle-auth.txt");
 const CLEANUP_AUTH_FILE = path.join(__dirname, "cleanup-auth.txt");
-const ALIEN_AUTH_FILE = path.join(__dirname, "alien-auth.txt");
+const CHARM_AUTH_FILE = path.join(__dirname, "charm-auth.txt");
 
 function readAuthCue(filePath, fallback) {
   try {
@@ -43,7 +43,7 @@ function readAuthCue(filePath, fallback) {
 
 let circleAuthCue = readAuthCue(CIRCLE_AUTH_FILE, "circle-auth-demo-change-me");
 let cleanupAuthCue = readAuthCue(CLEANUP_AUTH_FILE, "cleanup-auth-demo-change-me");
-let alienAuthCue = readAuthCue(ALIEN_AUTH_FILE, "alien-auth-demo-change-me");
+let charmAuthCue = readAuthCue(CHARM_AUTH_FILE, "charm-auth-demo-change-me");
 
 function pushTelemetry(entry) {
   telemetry.push(entry);
@@ -252,7 +252,7 @@ app.get("/debug/state", (_req, res) => {
     worldObjects: Object.values(worldObjects),
     circleAuthLoaded: !!circleAuthCue,
     cleanupAuthLoaded: !!cleanupAuthCue,
-    authFiles: { circle: CIRCLE_AUTH_FILE, cleanup: CLEANUP_AUTH_FILE }
+    authFiles: { circle: CIRCLE_AUTH_FILE, cleanup: CLEANUP_AUTH_FILE, charm: CHARM_AUTH_FILE }
   });
 });
 
@@ -297,11 +297,7 @@ io.on("connection", (socket) => {
     me.role = "daemon";
     me.daemonType = String(daemonType || "unknown");
     const cue = String(authCue || "").trim();
-    const expectedCue = me.daemonType === "cleanup"
-      ? cleanupAuthCue
-      : me.daemonType === "alienLandscape"
-        ? alienAuthCue
-        : circleAuthCue;
+    const expectedCue = me.daemonType === "cleanup" ? cleanupAuthCue : (me.daemonType === "magicCharm" ? charmAuthCue : circleAuthCue);
     me.authed = cue && cue === expectedCue;
     socket.emit("daemonAuthResult", {
       ok: me.authed,
@@ -450,12 +446,10 @@ io.on("connection", (socket) => {
         for (const id of Object.keys(worldObjects).map(Number)) {
           if (destroyObject(id, "cleanup_wipe")) destroyedCount += 1;
         }
-      } else if (clients[socket.id]?.daemonType === "alienLandscape") {
-        // Landscape ownership is logical rather than tied only to an ephemeral socket.
-        // This lets a reconnected landscape daemon remove a planting from an earlier session.
+      } else if (clients[socket.id]?.daemonType === "magicCharm") {
         for (const [idText, obj] of Object.entries(worldObjects)) {
-          if (obj?.metadata?.daemon !== "alienLandscape") continue;
-          if (destroyObject(Number(idText), "alien_landscape_clear")) destroyedCount += 1;
+          if (obj?.metadata?.daemon !== "magicCharm") continue;
+          if (destroyObject(Number(idText), "magic_charm_clear")) destroyedCount += 1;
         }
       } else {
         for (const id of Array.from(socketToObjectIds[socket.id] || [])) {

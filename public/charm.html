@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Magic Charm Daemon</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    html,body{margin:0;padding:0;background:#0b0b13;color:#f3f0ff;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}.wrap{max-width:760px;margin:0 auto;padding:16px}.card{background:#151321;border:1px solid #342c52;border-radius:16px;padding:14px;margin-top:12px}h2{margin:0 0 4px}.muted{font-size:12px;color:#aaa2c4;line-height:1.45}label{display:block;font-size:12px;color:#c7c0da;margin:8px 0 5px}textarea,input,select,button{width:100%;box-sizing:border-box;border:1px solid #43386a;background:#1b1730;color:#f6f2ff;border-radius:12px;padding:11px;font-size:14px}button{cursor:pointer;font-weight:650;margin-top:10px}.primary{background:#4c1d95;border-color:#7c3aed}.danger{background:#43151f;border-color:#9f2940}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.preview{display:grid;grid-template-columns:170px 1fr;gap:14px;align-items:center}.preview img{width:160px;height:160px;object-fit:contain;background:radial-gradient(circle,#241540 0,#11101b 65%);border-radius:18px;border:1px solid #3a315b}.stat{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:pre-wrap;color:#c9f7e1}@media(max-width:600px){.row,.preview{grid-template-columns:1fr}.preview img{margin:auto}}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h2>Magic Charm Daemon</h2>
+  <div class="muted">Creates a textured object in <b>actor space</b>. The PNG is served by this same Render site at <code>/assets/magic-charm.png</code>, while the object itself travels through the existing world-object channel.</div>
+
+  <div class="card">
+    <label>Daemon auth cue (server/charm-auth.txt)</label>
+    <textarea id="auth" placeholder="Paste charm-auth.txt"></textarea>
+    <button id="login" class="primary">Authenticate</button>
+    <div id="authStatus" class="muted" style="margin-top:8px">Not authenticated.</div>
+  </div>
+
+  <div class="card preview">
+    <img src="/assets/magic-charm.png" alt="Purple crystal magic charm texture">
+    <div>
+      <label>Attach charm to player</label>
+      <select id="target"><option value="">Waiting for players…</option></select>
+      <div class="row">
+        <div><label>Height above other players</label><input id="height" type="number" min="1" max="8" step="0.1" value="3.2"></div>
+        <div><label>Self-view distance</label><input id="forward" type="number" min="0.8" max="8" step="0.1" value="2.6"></div>
+      </div>
+      <div class="row">
+        <div><label>Charm size</label><input id="size" type="number" min="0.3" max="4" step="0.1" value="1.3"></div>
+        <div><label>Self-view vertical offset</label><input id="selfUp" type="number" min="-2" max="3" step="0.1" value="0.25"></div>
+      </div>
+      <button id="attach" class="primary" disabled>Attach / Replace Charm</button>
+      <button id="remove" class="danger" disabled>Remove All Magic Charms</button>
+    </div>
+  </div>
+
+  <div class="card"><div id="status" class="stat">Connecting…</div></div>
+</div>
+<script>
+const socket=io({transports:['websocket','polling']});
+const $=id=>document.getElementById(id);let state=null,authed=false,pending=null;
+function players(){const cs=state?.clients||{};return Object.entries(cs).filter(([,c])=>(c.role||'player')==='player'&&Number.isFinite(c.relX)&&Number.isFinite(c.relZ)&&Number.isFinite(c.anchorLat)&&Number.isFinite(c.anchorLon));}
+function short(id){return id.slice(0,5)+'…'+id.slice(-3)}
+function refresh(){const cur=$('target').value,ps=players();$('target').innerHTML='';for(const [id,c] of ps){const o=document.createElement('option');o.value=id;o.textContent=`${short(id)} @ ${c.anchorKey}`;$('target').appendChild(o)}if(ps.some(([id])=>id===cur))$('target').value=cur;$('attach').disabled=!authed||!ps.length;$('remove').disabled=!authed;}
+$('login').onclick=()=>socket.emit('daemonHello',{daemonType:'magicCharm',authCue:$('auth').value});
+$('remove').onclick=()=>socket.emit('daemonDestroyObjectsRequest',{ownedOnly:true});
+$('attach').onclick=async()=>{
+  const actorId=$('target').value,c=state?.clients?.[actorId];if(!authed||!c)return;
+  $('status').textContent='Removing earlier demo charms…';
+  socket.emit('daemonDestroyObjectsRequest',{ownedOnly:true});
+  setTimeout(()=>{
+    const size=Math.max(.3,Math.min(4,Number($('size').value)||1.3));
+    const h=Math.max(1,Math.min(8,Number($('height').value)||3.2));
+    const forward=Math.max(.8,Math.min(8,Number($('forward').value)||2.6));
+    const selfUp=Math.max(-2,Math.min(3,Number($('selfUp').value)||.25));
+    socket.emit('daemonCreateObjectsRequest',{objects:[{
+      kind:'billboard',subtype:'magicCharm',anchorLat:c.anchorLat,anchorLon:c.anchorLon,
+      position:{x:c.relX,y:0,z:c.relZ},rotation:{x:0,y:0,z:0},scale:{x:size,y:size,z:.1},
+      visual:{color:'#ffffff',imageUrl:'/assets/magic-charm.png',opacity:1,billboard:true},
+      metadata:{daemon:'magicCharm',space:'actor',actorId,selectable:true,pulse:true,attachment:{point:'above',offset:{x:0,y:h,z:0},selfForward:forward,selfUp}},
+      trigger:{enabled:true,type:'tap',radius:5,triggerId:'magic-charm',cooldownMs:700,oncePerClient:false}
+    }]});
+    $('status').textContent=`Requested charm attachment to ${short(actorId)}.`;
+  },150);
+};
+socket.on('connect',()=>{$('status').textContent='Connected. Authenticate, choose a player, attach.'});
+socket.on('worldState',s=>{state=s;refresh()});
+socket.on('daemonAuthResult',r=>{authed=!!r.ok;$('authStatus').textContent=authed?'Authenticated as magicCharm':'Authentication failed';refresh();if(authed)socket.emit('requestWorldSnapshot')});
+socket.on('daemonCreateObjectsResult',r=>{$('status').textContent=r.ok?`Charm created. Object id: ${r.created?.[0]?.id ?? '?'}`:`Create failed: ${r.reason||'unknown'}`});
+socket.on('daemonDestroyObjectsResult',r=>{$('status').textContent=r.ok?`Removed ${r.destroyedCount||0} magic charm object(s).`:`Remove failed: ${r.reason||'unknown'}`});
+socket.on('daemonTrigger',e=>{if(e?.triggerId==='magic-charm')$('status').textContent=`Charm tapped by ${short(e.sourceSocketId||'player')}.`});
+</script>
+</body>
+</html>
