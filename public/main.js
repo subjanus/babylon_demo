@@ -28,27 +28,77 @@ horizonMat.emissiveColor = new BABYLON.Color3(0.3, 0.6, 1.0);
 horizonMat.alpha = 0.55;
 horizonMat.disableLighting = true;
 horizonRing.material = horizonMat;
+horizonRing.isPickable = false;
 // Torus is already in the ground plane here; leave it level for a true horizon guide.
 horizonRing.parent = horizonRoot;
 
-const northTick = BABYLON.MeshBuilder.CreateCylinder("northTick", { height: 0.85, diameterTop: 0.0, diameterBottom: 0.35, tessellation: 12 }, scene);
+// CARDINAL HORIZON MARKERS --------------------------------------------------
+// Keep these deliberately small.  Shape + color are both unique so direction
+// remains readable in bright light and does not depend on color alone.
+// World convention here is -Z = north, +X = east, +Z = south, -X = west.
+const cardinalRadius = 9.25;
+
+// North: compact warm cone / arrowhead.
+const northTick = BABYLON.MeshBuilder.CreateCylinder(
+  "northTick",
+  { height: 0.68, diameterTop: 0.0, diameterBottom: 0.34, tessellation: 12 },
+  scene
+);
 const northMat = new BABYLON.StandardMaterial("northMat", scene);
-northMat.emissiveColor = new BABYLON.Color3(1.0, 0.35, 0.2);
-northMat.alpha = 0.92;
+northMat.emissiveColor = BABYLON.Color3.FromHexString("#FF5A36");
+northMat.alpha = 0.94;
 northMat.disableLighting = true;
 northTick.material = northMat;
-northTick.rotation.z = Math.PI / 2;
-northTick.position.set(0, 0, -9.4);
+northTick.position.set(0, 0, -cardinalRadius);
 northTick.parent = horizonRoot;
+northTick.isPickable = false;
 
-const eastTick = BABYLON.MeshBuilder.CreateBox("eastTick", { width: 0.18, height: 0.18, depth: 0.9 }, scene);
+// East: cool cyan tangent bar.
+const eastTick = BABYLON.MeshBuilder.CreateBox(
+  "eastTick",
+  { width: 0.16, height: 0.18, depth: 0.72 },
+  scene
+);
 const eastMat = new BABYLON.StandardMaterial("eastMat", scene);
-eastMat.emissiveColor = new BABYLON.Color3(0.4, 0.85, 1.0);
-eastMat.alpha = 0.65;
+eastMat.emissiveColor = BABYLON.Color3.FromHexString("#27D3FF");
+eastMat.alpha = 0.90;
 eastMat.disableLighting = true;
 eastTick.material = eastMat;
-eastTick.position.set(9, 0, 0);
+eastTick.position.set(cardinalRadius, 0, 0);
 eastTick.parent = horizonRoot;
+eastTick.isPickable = false;
+
+// South: small green bead.
+const southTick = BABYLON.MeshBuilder.CreateSphere(
+  "southTick",
+  { diameter: 0.38, segments: 12 },
+  scene
+);
+const southMat = new BABYLON.StandardMaterial("southMat", scene);
+southMat.emissiveColor = BABYLON.Color3.FromHexString("#58E36D");
+southMat.alpha = 0.92;
+southMat.disableLighting = true;
+southTick.material = southMat;
+southTick.position.set(0, 0, cardinalRadius);
+southTick.parent = horizonRoot;
+southTick.isPickable = false;
+
+// West: violet four-sided diamond.  A square cylinder gives us a distinct
+// faceted silhouette without adding textures or GUI labels.
+const westTick = BABYLON.MeshBuilder.CreateCylinder(
+  "westTick",
+  { height: 0.46, diameter: 0.44, tessellation: 4 },
+  scene
+);
+const westMat = new BABYLON.StandardMaterial("westMat", scene);
+westMat.emissiveColor = BABYLON.Color3.FromHexString("#C084FC");
+westMat.alpha = 0.92;
+westMat.disableLighting = true;
+westTick.material = westMat;
+westTick.rotation.y = Math.PI / 4;
+westTick.position.set(-cardinalRadius, 0, 0);
+westTick.parent = horizonRoot;
+westTick.isPickable = false;
 
 // SYMBOLIC CALIBRATION v1 ---------------------------------------------------
 // These two objects deliberately do NOT depend on GPS/worldRoot. They stay
