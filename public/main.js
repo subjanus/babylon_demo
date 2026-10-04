@@ -599,6 +599,59 @@ function mkButton(stack, id, label, onClick) {
   return b;
 }
 
+// Tiny synthesized UI feedback.  No audio files are needed: the browser makes
+// the sound with Web Audio.  iOS requires AudioContext creation/resume to occur
+// during a real user gesture, so pointerdown primes it and selection merely uses it.
+let uiAudioCtx = null;
+function ensureUiAudio() {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return null;
+    if (!uiAudioCtx) uiAudioCtx = new AudioCtx();
+    if (uiAudioCtx.state === "suspended") uiAudioCtx.resume().catch(() => {});
+    return uiAudioCtx;
+  } catch (_) {
+    return null;
+  }
+}
+
+function playSelectionSound() {
+  const ctx = ensureUiAudio();
+  if (!ctx || ctx.state === "closed") return;
+  const now = ctx.currentTime;
+  try {
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(0.0001, now);
+    master.gain.exponentialRampToValueAtTime(0.12, now + 0.008);
+    master.gain.exponentialRampToValueAtTime(0.0001, now + 0.095);
+    master.connect(ctx.destination);
+
+    const low = ctx.createOscillator();
+    low.type = "sine";
+    low.frequency.setValueAtTime(560, now);
+    low.frequency.exponentialRampToValueAtTime(700, now + 0.07);
+    low.connect(master);
+
+    const highGain = ctx.createGain();
+    highGain.gain.value = 0.32;
+    highGain.connect(master);
+    const high = ctx.createOscillator();
+    high.type = "triangle";
+    high.frequency.setValueAtTime(840, now);
+    high.frequency.exponentialRampToValueAtTime(1040, now + 0.055);
+    high.connect(highGain);
+
+    low.start(now);
+    high.start(now + 0.006);
+    low.stop(now + 0.10);
+    high.stop(now + 0.075);
+  } catch (_) {}
+}
+
+// Prime Web Audio on the first genuine touch/click.  This is intentionally
+// passive so it does not interfere with Babylon or Gesture Lab pointer handling.
+canvas.addEventListener("pointerdown", () => { ensureUiAudio(); }, { passive: true });
+
 let gestureLab = null;
 let motionLab = null;
 
@@ -626,7 +679,15 @@ function initGestureLabOnce() {
   if (gestureLab) return gestureLab;
   gestureLab = createGestureLab({
     canvas, camera, scene,
-    onStatus: (msg) => setStatus(msg)
+    onStatus: (msg) => setStatus(msg),
+    onGestureComplete: (g) => {
+      if (!g || g.cancelled || (g.sessionMaxFingers || 1) > 1) return;
+      if (g.type === "swipe" || g.type === "flick") {
+        selectObjectInFront();
+      } else if (g.type === "tap") {
+        selectObjectAtClientPoint(g.endX, g.endY);
+      }
+    }
   });
   return gestureLab;
 }
@@ -663,62 +724,88 @@ function disableMotionCamera() {
 function createDrawerUI() {
   const adt = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("ui", true, scene);
 
-  const toggle = BABYLON.GUI.Button.CreateSimpleButton("drawerToggle", "☰");
-  toggle.width = "44px";
-  toggle.height = "44px";
-  toggle.color = "#e6edf3";
-  toggle.background = "#111827";
-  toggle.cornerRadius = 12;
-  toggle.thickness = 1;
-  toggle.left = "10px";
-  toggle.top = "10px";
-  toggle.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  toggle.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
-  adt.addControl(toggle);
+  function makeToggle(name, label, side) {
+    const b = BABYLON.GUI.Button.CreateSimpleButton(name, label);
+    b.width = "44px";
+    b.height = "44px";
+    b.color = "#e6edf3";
+    b.background = "#111827";
+    b.cornerRadius = 12;
+    b.thickness = 1;
+    b.top = "10px";
+    b.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
+    if (side === "left") {
+      b.left = "10px";
+      b.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+    } else {
+      b.left = "-10px";
+      b.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
+    }
+    adt.addControl(b);
+    return b;
+  }
 
-  const drawer = new BABYLON.GUI.Rectangle("drawer");
-  drawer.width = "340px";
-  drawer.height = "560px";
-  drawer.thickness = 1;
-  drawer.cornerRadius = 16;
-  drawer.color = "#334155";
-  drawer.background = "#0b1220ee";
-  drawer.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
-  drawer.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
-  drawer.left = "-10px";
-  drawer.top = "10px";
-  drawer.isVisible = true;
-  adt.addControl(drawer);
+  function makeDrawer(name, titleText, side, heightPx) {
+    const drawer = new BABYLON.GUI.Rectangle(name);
+    drawer.width = "340px";
+    drawer.height = `${heightPx}px`;
+    drawer.thickness = 1;
+    drawer.cornerRadius = 16;
+    drawer.color = "#334155";
+    drawer.background = "#0b1220ee";
+    drawer.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
+    drawer.top = "10px";
+    if (side === "left") {
+      drawer.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+      drawer.left = "10px";
+    } else {
+      drawer.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
+      drawer.left = "-10px";
+    }
+    adt.addControl(drawer);
 
-  const root = new BABYLON.GUI.StackPanel("drawerRoot");
-  root.width = 0.94;
-  root.paddingTop = "10px";
-  root.paddingLeft = "10px";
-  root.paddingRight = "10px";
-  drawer.addControl(root);
+    const root = new BABYLON.GUI.StackPanel(`${name}Root`);
+    root.width = 0.94;
+    root.paddingTop = "10px";
+    root.paddingLeft = "10px";
+    root.paddingRight = "10px";
+    drawer.addControl(root);
 
-  const headerRow = new BABYLON.GUI.StackPanel("headerRow");
-  headerRow.isVertical = false;
-  headerRow.height = "34px";
-  root.addControl(headerRow);
+    const headerRow = new BABYLON.GUI.StackPanel(`${name}HeaderRow`);
+    headerRow.isVertical = false;
+    headerRow.height = "34px";
+    root.addControl(headerRow);
 
-  const title = new BABYLON.GUI.TextBlock("drawerTitle", "Field Kit");
-  title.color = "#e6edf3";
-  title.fontSize = 18;
-  title.height = "34px";
-  title.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  title.resizeToFit = true;
-  headerRow.addControl(title);
+    const title = new BABYLON.GUI.TextBlock(`${name}Title`, titleText);
+    title.color = "#e6edf3";
+    title.fontSize = 18;
+    title.height = "34px";
+    title.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+    title.resizeToFit = true;
+    headerRow.addControl(title);
 
-  const close = BABYLON.GUI.Button.CreateSimpleButton("btnDrawerClose", "×");
-  close.width = "34px";
-  close.height = "34px";
-  close.color = "#e6edf3";
-  close.background = "#111827";
-  close.thickness = 1;
-  close.cornerRadius = 10;
-  close.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
-  headerRow.addControl(close);
+    const close = BABYLON.GUI.Button.CreateSimpleButton(`${name}Close`, "×");
+    close.width = "34px";
+    close.height = "34px";
+    close.color = "#e6edf3";
+    close.background = "#111827";
+    close.thickness = 1;
+    close.cornerRadius = 10;
+    close.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
+    headerRow.addControl(close);
+
+    return { drawer, root, close, side, heightPx };
+  }
+
+  const leftToggle = makeToggle("navDrawerToggle", "☰", "left");
+  const rightToggle = makeToggle("toolsDrawerToggle", "⚙", "right");
+  const nav = makeDrawer("navDrawer", "Navigation", "left", 550);
+  const tools = makeDrawer("toolsDrawer", "World Tools", "right", 410);
+
+  // Keep startup familiar but uncluttered: navigation/status is open; tools wait
+  // on the opposite edge. On narrow phones, opening one drawer closes the other.
+  nav.drawer.isVisible = true;
+  tools.drawer.isVisible = false;
 
   uiStatusText = new BABYLON.GUI.TextBlock("uiStatus", "Connecting…");
   uiStatusText.color = "#e6edf3";
@@ -726,14 +813,14 @@ function createDrawerUI() {
   uiStatusText.height = "34px";
   uiStatusText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
   uiStatusText.textWrapping = true;
-  root.addControl(uiStatusText);
+  nav.root.addControl(uiStatusText);
 
   uiCountsText = new BABYLON.GUI.TextBlock("uiCounts", "Users: 0 | Objects: 0 | Deleted: 0");
   uiCountsText.color = "#cbd5e1";
   uiCountsText.fontSize = 12;
   uiCountsText.height = "28px";
   uiCountsText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  root.addControl(uiCountsText);
+  nav.root.addControl(uiCountsText);
 
   uiSelectedText = new BABYLON.GUI.TextBlock("uiSelected", "Selected: none");
   uiSelectedText.color = "#cbd5e1";
@@ -741,24 +828,24 @@ function createDrawerUI() {
   uiSelectedText.height = "40px";
   uiSelectedText.textWrapping = true;
   uiSelectedText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  root.addControl(uiSelectedText);
+  nav.root.addControl(uiSelectedText);
 
-  const sep = new BABYLON.GUI.Rectangle("sep");
+  const sep = new BABYLON.GUI.Rectangle("navSep");
   sep.height = "1px";
   sep.thickness = 0;
   sep.background = "#1f2937";
-  root.addControl(sep);
+  nav.root.addControl(sep);
 
   anchorSummaryText = new BABYLON.GUI.TextBlock("anchorSummary", "Anchor: 0.000000, 0.000000");
   anchorSummaryText.color = "#93c5fd";
   anchorSummaryText.fontSize = 12;
   anchorSummaryText.height = "24px";
   anchorSummaryText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  root.addControl(anchorSummaryText);
+  nav.root.addControl(anchorSummaryText);
 
-  anchorInput = mkInput(root, "anchorInput", "Anchor Lat,Lon", formatAnchorText(anchorLat, anchorLon));
+  anchorInput = mkInput(nav.root, "anchorInput", "Anchor Lat,Lon", formatAnchorText(anchorLat, anchorLon));
 
-  mkButton(root, "uiSetAnchor", "Set Anchor", () => {
+  mkButton(nav.root, "uiSetAnchor", "Set Anchor", () => {
     const parsed = parseAnchorText(anchorInput?.text);
     if (!parsed) {
       setStatus("Anchor format: lat,lon");
@@ -769,7 +856,7 @@ function createDrawerUI() {
     emitTelemetry("ui", { action: "setAnchor", anchorLat, anchorLon });
   });
 
-  mkButton(root, "uiPasteAnchor", "Paste Anchor", async () => {
+  mkButton(nav.root, "uiPasteAnchor", "Paste Anchor", async () => {
     try {
       const text = await navigator.clipboard.readText();
       const parsed = parseAnchorText(text);
@@ -786,14 +873,14 @@ function createDrawerUI() {
     }
   });
 
-  mkButton(root, "uiUseGpsAnchor", "Use My GPS as Anchor", () => {
+  mkButton(nav.root, "uiUseGpsAnchor", "Use My GPS as Anchor", () => {
     if (isNumber(rawLat) && isNumber(rawLon)) {
       applyAnchor(rawLat, rawLon);
       emitTelemetry("ui", { action: "useGpsAnchor", anchorLat, anchorLon });
     }
   });
 
-  bFollow = mkButton(root, "uiFollow", "Follow: On", () => {
+  bFollow = mkButton(nav.root, "uiFollow", "Follow: On", () => {
     followMe = !followMe;
     bFollow.textBlock.text = followMe ? "Follow: On" : "Follow: Off";
     if (!followMe) {
@@ -802,14 +889,14 @@ function createDrawerUI() {
     }
   });
 
-  bNorth = mkButton(root, "uiNorth", "Lock North: Off", () => {
+  bNorth = mkButton(nav.root, "uiNorth", "Lock North: Off", () => {
     lockNorth = !lockNorth;
     yawSmoothed = getCameraYawRad();
     yawZero = yawSmoothed;
     bNorth.textBlock.text = lockNorth ? "Lock North: On" : "Lock North: Off";
   });
 
-  mkButton(root, "uiPerm", "Enable Motion", async (btn) => {
+  mkButton(nav.root, "uiPerm", "Enable Motion", async (btn) => {
     if (motionEnabled) {
       disableMotionCamera();
       btn.textBlock.text = "Enable Motion";
@@ -819,56 +906,74 @@ function createDrawerUI() {
 
     const ok = await requestDevicePermissions();
     motionEnabled = !!ok;
-    pitchZeroDeg = null; // unused in recovery quaternion-pitch mode
+    pitchZeroDeg = null;
     btn.textBlock.text = ok ? "Motion Enabled (tap to disable)" : "Motion Blocked";
     if (!ok) return;
 
-    // Critical: Babylon's FreeCamera pointer input otherwise continues updating
-    // camera rotation and can clear/override the sensor-driven quaternion.
     syncCameraControlMode();
     camera.rotationQuaternion = camera.rotationQuaternion || BABYLON.Quaternion.Identity();
     setStatus("Motion enabled | phone owns camera; finger-look disabled");
   });
 
-  mkButton(root, "uiColor", "Toggle Color", () => socket.emit("toggleColor"));
-  mkButton(root, "uiDrop", "Drop Cube", () => {
+  mkButton(tools.root, "uiColor", "Toggle Color", () => socket.emit("toggleColor"));
+  mkButton(tools.root, "uiDrop", "Drop Cube", () => {
     const rel = currentRel();
     if (!rel) return;
     socket.emit("dropCube", { anchorLat, anchorLon, relX: rel.x, relY: 0, relZ: rel.z });
     emitTelemetry("drop", { relX: rel.x, relZ: rel.z });
   });
 
-  uiDeleteBtn = mkButton(root, "uiDelete", "Delete Selected", attemptDeleteSelected);
+  uiDeleteBtn = mkButton(tools.root, "uiDelete", "Delete Selected", attemptDeleteSelected);
   uiDeleteBtn.isEnabled = false;
   uiDeleteBtn.alpha = 0.5;
 
-  const bGesture = mkButton(root, "uiGestureLab", "Gesture Lab: Off", (btn) => {
+  const bGesture = mkButton(tools.root, "uiGestureLab", "Gesture Lab: Off", (btn) => {
     const lab = initGestureLabOnce();
     const on = lab.setEnabled(!lab.isEnabled());
-    // gestureLab historically re-attaches FreeCamera controls when it turns off.
-    // Reconcile immediately so Motion can retain camera ownership when enabled.
     syncCameraControlMode();
     btn.textBlock.text = on ? "Gesture Lab: On" : "Gesture Lab: Off";
   });
 
-  const bMotionLab = mkButton(root, "uiMotionLab", "Motion Lab: Off", (btn) => {
+  const bMotionLab = mkButton(tools.root, "uiMotionLab", "Motion Lab: Off", (btn) => {
     const lab = initMotionLabOnce();
     const on = lab.setEnabled(!lab.isEnabled());
     btn.textBlock.text = on ? "Motion Lab: On" : "Motion Lab: Off";
   });
 
-  const help = new BABYLON.GUI.TextBlock("helpText", "Privacy mode: anchor defines the shared world root. Your phone stores a private session GPS origin and only transmits movement in relative meters.");
-  help.height = "70px";
+  const help = new BABYLON.GUI.TextBlock(
+    "helpText",
+    "Swipe/Flick (Gesture Lab): selects the object directly in front of the camera and fires the same tap behavior. Selection sound is synthesized locally with Web Audio."
+  );
+  help.height = "78px";
   help.textWrapping = true;
   help.fontSize = 11;
   help.color = "#94a3b8";
   help.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  root.addControl(help);
+  tools.root.addControl(help);
 
-  function setOpen(open) { drawer.isVisible = open; }
-  toggle.onPointerUpObservable.add(() => setOpen(!drawer.isVisible));
-  close.onPointerUpObservable.add(() => setOpen(false));
-  return { drawer, toggle };
+  function narrowScreen() { return window.innerWidth < 760; }
+  function setNavOpen(open) {
+    nav.drawer.isVisible = open;
+    if (open && narrowScreen()) tools.drawer.isVisible = false;
+  }
+  function setToolsOpen(open) {
+    tools.drawer.isVisible = open;
+    if (open && narrowScreen()) nav.drawer.isVisible = false;
+  }
+
+  leftToggle.onPointerUpObservable.add(() => setNavOpen(!nav.drawer.isVisible));
+  rightToggle.onPointerUpObservable.add(() => setToolsOpen(!tools.drawer.isVisible));
+  nav.close.onPointerUpObservable.add(() => setNavOpen(false));
+  tools.close.onPointerUpObservable.add(() => setToolsOpen(false));
+
+  return {
+    leftDrawer: nav.drawer,
+    rightDrawer: tools.drawer,
+    leftToggle,
+    rightToggle,
+    leftDrawerHeight: nav.heightPx,
+    rightDrawerHeight: tools.heightPx
+  };
 }
 
 const ui = createDrawerUI();
@@ -878,22 +983,28 @@ updateAnchorSummary();
 
 function isPointerOverDrawerUI(evt) {
   if (!evt) return false;
-  const w = engine.getRenderWidth(true);
+  const w = window.innerWidth;
   const x = evt.clientX;
   const y = evt.clientY;
-  const overToggle = x >= 10 && x <= 54 && y >= 10 && y <= 54;
-  let overDrawer = false;
+  const margin = 10;
+  const toggleSize = 44;
+  const drawerWidth = 340;
+
+  const overLeftToggle = x >= margin && x <= margin + toggleSize && y >= margin && y <= margin + toggleSize;
+  const overRightToggle = x >= w - margin - toggleSize && x <= w - margin && y >= margin && y <= margin + toggleSize;
+  let overLeftDrawer = false;
+  let overRightDrawer = false;
+
   try {
-    if (ui?.drawer?.isVisible) {
-      const drawerWidth = 340;
-      const drawerHeight = 560;
-      const margin = 10;
-      const drawerLeft = w - (drawerWidth + margin);
-      const drawerTop = margin;
-      overDrawer = x >= drawerLeft && x <= w - margin && y >= drawerTop && y <= drawerTop + drawerHeight;
+    if (ui?.leftDrawer?.isVisible) {
+      overLeftDrawer = x >= margin && x <= margin + drawerWidth && y >= margin && y <= margin + (ui.leftDrawerHeight || 550);
+    }
+    if (ui?.rightDrawer?.isVisible) {
+      overRightDrawer = x >= w - margin - drawerWidth && x <= w - margin && y >= margin && y <= margin + (ui.rightDrawerHeight || 410);
     }
   } catch (_) {}
-  return overToggle || overDrawer;
+
+  return overLeftToggle || overRightToggle || overLeftDrawer || overRightDrawer;
 }
 
 function ensurePlayerPointer(id, color) {
@@ -1011,7 +1122,40 @@ function setSelection(mesh) {
   selectedLabel = md.kind === "worldObject" ? `Object #${selectedObjectId}` : String(md.kind);
   selectedRel = md.rel ? { ...md.rel } : null;
   updateSelectionHUD();
+  playSelectionSound();
   maybeEmitTapTrigger(selectedObjectId);
+}
+
+function isSelectableMesh(mesh) {
+  return !!mesh?.metadata?.kind;
+}
+
+function selectObjectAtClientPoint(clientX, clientY) {
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return clearSelection();
+  const rect = canvas.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+  const pick = scene.pick(x, y, (mesh) => isSelectableMesh(mesh));
+  if (pick?.hit && pick.pickedMesh) setSelection(pick.pickedMesh);
+  else clearSelection();
+}
+
+function selectObjectInFront() {
+  // A forward ray makes the gesture target independent of where the finger
+  // finished.  The player's gaze/camera direction chooses the target.
+  let pick = null;
+  try {
+    const ray = camera.getForwardRay(250);
+    pick = scene.pickWithRay(ray, (mesh) => isSelectableMesh(mesh));
+  } catch (_) {}
+  if (pick?.hit && pick.pickedMesh) {
+    setSelection(pick.pickedMesh);
+    setStatus(`Swipe selected ${selectedLabel}`);
+    return pick.pickedMesh;
+  }
+  clearSelection();
+  setStatus("Swipe: nothing directly ahead");
+  return null;
 }
 
 function updateSelectionHUD() {
@@ -1060,7 +1204,13 @@ function maybeEmitTapTrigger(objectId) {
 scene.onPointerObservable.add((pi) => {
   if (pi.type !== BABYLON.PointerEventTypes.POINTERDOWN) return;
   if (isPointerOverDrawerUI(pi.event)) return;
-  const pick = scene.pick(scene.pointerX, scene.pointerY);
+
+  // When Gesture Lab owns touch, it waits until pointer-up so a swipe does not
+  // accidentally select whatever happened to be under the finger at its start.
+  const gestureOwnsTouch = !!(gestureLab && gestureLab.isEnabled && gestureLab.isEnabled());
+  if (gestureOwnsTouch && pi.event?.pointerType !== "mouse") return;
+
+  const pick = scene.pick(scene.pointerX, scene.pointerY, (mesh) => isSelectableMesh(mesh));
   if (pick && pick.hit && pick.pickedMesh) setSelection(pick.pickedMesh);
   else clearSelection();
 });

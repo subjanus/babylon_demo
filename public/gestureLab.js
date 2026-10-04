@@ -1,4 +1,4 @@
-export function createGestureLab({ canvas, camera, scene, onStatus = () => {} }) {
+export function createGestureLab({ canvas, camera, scene, onStatus = () => {}, onGestureComplete = () => {} }) {
   const config = {
     tapMaxMs: 300,
     longPressMs: 525,
@@ -131,6 +131,7 @@ export function createGestureLab({ canvas, camera, scene, onStatus = () => {} })
     const pressure = boundsPressure(p.samples);
     return {
       type, pointerId: p.pointerId, pointerType: p.pointerType,
+      startX: a.x, startY: a.y, endX: b.x, endY: b.y,
       dx, dy, distance: dist, pathLength: pathLength(p.samples), duration: dur,
       velocity, angle, samples: p.samples.length, pressure
     };
@@ -339,10 +340,21 @@ export function createGestureLab({ canvas, camera, scene, onStatus = () => {} })
     g.completedAt = Date.now();
     g.orientation = { ...readOrientation() };
     g.maxSimultaneous = maxSimultaneous;
+    g.sessionMaxFingers = session?.maxFingers || active.size || 1;
     lastGesture = g;
     history.push({ kind: 'finger', ...g });
     if (history.length > 200) history.shift();
     if (session) session.completedGestures.push(g);
+
+    // Let the host game attach meaning to a completed gesture without making
+    // Gesture Lab responsible for game rules.  For example, main.js can turn
+    // a one-finger swipe into a center-view object selection.
+    if (!cancelled) {
+      try { onGestureComplete(g); } catch (err) {
+        console.warn('Gesture completion handler failed', err);
+      }
+    }
+
     active.delete(e.pointerId);
     noteTransition(cancelled ? 'cancel' : 'up');
     updateSessionMetrics();
